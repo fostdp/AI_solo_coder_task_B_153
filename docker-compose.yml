@@ -1,0 +1,178 @@
+services:
+  # ======================================================================
+  # MQTT Broker (Eclipse Mosquitto)
+  # ======================================================================
+  mqtt:
+    image: eclipse-mosquitto:2.0.18
+    container_name: spindle-mqtt
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 mosquitto_sub -h 127.0.0.1 -p 1883 -t $$SYS/broker/version -C 1 -W 2 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    networks:
+      - spindle-net
+
+  # ======================================================================
+  # ClickHouse
+  # ======================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: spindle-clickhouse
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    environment:
+      CLICKHOUSE_DB: spindle_system
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - spindle-net
+
+  # ======================================================================
+  # Prometheus (scrapes backend /metrics)
+  # ======================================================================
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: spindle-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - spindle-net
+
+  # ======================================================================
+  # Rust Backend (multi-stage static binary)
+  # ======================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.backend
+      target: runtime
+    container_name: spindle-backend
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
+    environment:
+      RUST_LOG: info
+      LOG_FORMAT: json
+      APP_CONFIG_PATH: /app/config/app_config.json
+      SPINDLE_MQTT_HOST: mqtt
+      SPINDLE_MQTT_PORT: "1883"
+      SPINDLE_CLICKHOUSE_URL: http://clickhouse:8123
+      SPINDLE_API_BIND: 0.0.0.0:3000
+    volumes:
+      - ./backend/config:/app/config:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:9091:9090"
+    networks:
+      - spindle-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/metrics 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ======================================================================
+  # Frontend (Nginx with static gzip + dynamic gzip)
+  # ======================================================================
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: spindle-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    networks:
+      - spindle-net
+
+  # ======================================================================
+  # Spindle Sensor Simulator (Python, optional service)
+  # ======================================================================
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: spindle-simulator
+    restart: "no"
+    profiles:
+      - simulator
+    depends_on:
+      mqtt:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: "1"
+    command: >
+      --host mqtt
+      --port 1883
+      --interval 60
+      --spindles 8
+      --mode sweep
+      --rpm-sweep-min 500
+      --rpm-sweep-max 4000
+      --rpm-sweep-minutes 10
+      --oil-aging 0.2
+      --oil-contamination 0.1
+    networks:
+      - spindle-net
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
+  clickhouse_data:
+  clickhouse_logs:
+  prometheus_data:
+
+networks:
+  spindle-net:
+    driver: bridge
+    ipam:
+      driver: default
