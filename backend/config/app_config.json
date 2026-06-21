@@ -1,0 +1,78 @@
+{
+  "mqtt": {
+    "broker_host": "localhost",
+    "broker_port": 1883,
+    "subscriber_client_id": "spindle-backend",
+    "alert_publisher_client_id": "spindle-alert-pub",
+    "sensor_topic": "spindle/sensor_data",
+    "alert_topic": "spindle/alerts",
+    "keep_alive_seconds": 5
+  },
+  "clickhouse": {
+    "base_url": "http://localhost:8123",
+    "database": "spindle_system"
+  },
+  "api": {
+    "bind_address": "0.0.0.0",
+    "bind_port": 3000
+  },
+  "rotor_dynamics": {
+    "mass_kg": 0.5,
+    "shaft_length_m": 0.3,
+    "shaft_diameter_m": 0.008,
+    "unbalance_eccentricity_m": 0.0001,
+    "damping_ratio": 0.02,
+    "youngs_modulus_pa": 210000000000.0,
+    "gravity_mps2": 9.81
+  },
+  "oil_film_bearing": {
+    "viscosity_pa_s": 0.01,
+    "bearing_length_m": 0.02,
+    "bearing_diameter_m": 0.016,
+    "bearing_radius_m": 0.008,
+    "radial_clearance_m": 0.00005,
+    "nonlinear_damping_alpha": 5000000.0,
+    "whirl_threshold_ratio": 0.55,
+    "max_amplitude_growth": 8.0
+  },
+  "regression_model": {
+    "target_twist_per_meter": 800.0,
+    "initial_uniformity_coeffs": {
+      "beta0": 95.0,
+      "beta1": -0.8,
+      "beta2": -0.3,
+      "beta3": -0.05
+    },
+    "initial_strength_coeffs": {
+      "alpha0": 15.0,
+      "alpha1": 0.02,
+      "alpha2": -1.5,
+      "alpha3": -0.00001
+    },
+    "lms_learning_rate": 0.01,
+    "wear_energy_coefficient": 0.000000001,
+    "wear_time_coefficient": 0.0000000002,
+    "wear_max_coefficient": 0.3,
+    "calibration_window_size": 200,
+    "vibration_impact_lambda": 2.0
+  },
+  "validation": {
+    "rpm_min": 0.0,
+    "rpm_max": 10000.0,
+    "vibration_min_mm": 0.0,
+    "vibration_max_mm": 10.0,
+    "temperature_min_c": -40.0,
+    "temperature_max_c": 200.0,
+    "twist_min_per_meter": 0.0,
+    "twist_max_per_meter": 10000.0
+  },
+  "alert_thresholds": {
+    "vibration_warning_mm": 0.5,
+    "vibration_critical_mm": 1.0,
+    "twist_variance_warning": 0.1,
+    "twist_variance_critical": 0.2,
+    "critical_speed_tolerance_pct": 10.0,
+    "temperature_warning_c": 60.0,
+    "temperature_critical_c": 80.0
+  }
+}
