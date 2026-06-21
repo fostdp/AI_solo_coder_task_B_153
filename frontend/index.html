@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>古代水转纺车锭子振动仿真与纱线质量预测系统</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="header">
+        <h1>🏺 古代水转纺车锭子振动仿真与纱线质量预测系统</h1>
+        <div class="status">
+            <div class="dot"></div>
+            <span id="connection-status">连接中...</span>
+        </div>
+    </header>
+
+    <div class="main-layout">
+        <div class="panel three-panel">
+            <div class="panel-header">
+                <span>锭子三维模型 · 振动仿真</span>
+                <select id="spindle-select" class="spindle-selector">
+                    <option value="SPD-001">SPD-001</option>
+                    <option value="SPD-002">SPD-002</option>
+                    <option value="SPD-003">SPD-003</option>
+                    <option value="SPD-004">SPD-004</option>
+                    <option value="SPD-005">SPD-005</option>
+                    <option value="SPD-006">SPD-006</option>
+                    <option value="SPD-007">SPD-007</option>
+                    <option value="SPD-008">SPD-008</option>
+                </select>
+            </div>
+            <div id="three-container" style="flex:1; position:relative;"></div>
+            <div class="three-overlay">
+                <div class="overlay-badge">
+                    <span class="label">临界转速</span>
+                    <span class="value" id="overlay-critical" style="color:var(--accent-cyan)">-- RPM</span>
+                </div>
+                <div class="overlay-badge">
+                    <span class="label">总位移</span>
+                    <span class="value" id="overlay-displacement" style="color:var(--accent-amber)">-- mm</span>
+                </div>
+                <div class="overlay-badge">
+                    <span class="label">涡动比</span>
+                    <span class="value" id="overlay-whirl" style="color:var(--accent-purple)">--</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel sensor-panel">
+            <div class="panel-header">
+                <span>传感器数据</span>
+                <button class="simulate-btn" id="simulate-btn">仿真计算</button>
+            </div>
+            <div class="panel-body">
+                <div class="sensor-grid">
+                    <div class="sensor-card rpm">
+                        <div class="card-label">转速</div>
+                        <div class="card-value"><span id="val-rpm">--</span><span class="card-unit">RPM</span></div>
+                    </div>
+                    <div class="sensor-card vib">
+                        <div class="card-label">振动幅值</div>
+                        <div class="card-value"><span id="val-vib">--</span><span class="card-unit">mm</span></div>
+                    </div>
+                    <div class="sensor-card temp">
+                        <div class="card-label">锭子温度</div>
+                        <div class="card-value"><span id="val-temp">--</span><span class="card-unit">°C</span></div>
+                    </div>
+                    <div class="sensor-card twist">
+                        <div class="card-label">纱线捻度</div>
+                        <div class="card-value"><span id="val-twist">--</span><span class="card-unit">捻/m</span></div>
+                    </div>
+                </div>
+
+                <div class="vibration-canvas-wrap">
+                    <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;">振动位移时域波形 (X/Y)</div>
+                    <canvas id="vibration-canvas"></canvas>
+                </div>
+
+                <div class="yarn-quality-section">
+                    <div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;">纱线质量预测</div>
+                    <div class="quality-bar">
+                        <div class="bar-label">
+                            <span style="color:var(--accent-green)">均匀度</span>
+                            <span id="val-uniformity" style="color:var(--accent-green)">--%</span>
+                        </div>
+                        <div class="bar-track"><div class="bar-fill" id="bar-uniformity" style="width:0%;background:var(--accent-green)"></div></div>
+                    </div>
+                    <div class="quality-bar">
+                        <div class="bar-label">
+                            <span style="color:var(--accent-cyan)">强度</span>
+                            <span id="val-strength" style="color:var(--accent-cyan)">-- cN/tex</span>
+                        </div>
+                        <div class="bar-track"><div class="bar-fill" id="bar-strength" style="width:0%;background:var(--accent-cyan)"></div></div>
+                    </div>
+                    <div class="quality-bar">
+                        <div class="bar-label">
+                            <span style="color:var(--accent-amber)">振动影响因子</span>
+                            <span id="val-impact" style="color:var(--accent-amber)">--</span>
+                        </div>
+                        <div class="bar-track"><div class="bar-fill" id="bar-impact" style="width:0%;background:var(--accent-amber)"></div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel alert-panel">
+            <div class="panel-header">
+                <span>告警</span>
+                <span id="alert-count" style="color:var(--accent-red)">0</span>
+            </div>
+            <div class="panel-body">
+                <div class="alert-list" id="alert-list">
+                    <div class="empty-alerts">暂无告警</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="spindle_3d.js"></script>
+    <script src="vibration_panel.js"></script>
+</body>
+</html>
