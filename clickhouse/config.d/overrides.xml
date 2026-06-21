@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <!-- TTL / merge optimisation settings -->
+    <merge_tree>
+        <parts_to_delay_insert>150</parts_to_delay_insert>
+        <max_suspicious_broken_parts>5</max_suspicious_broken_parts>
+        <max_part_loading_threads>auto</max_part_loading_threads>
+        <max_merge_bytes_to_use_disk_cache>10737418240</max_merge_bytes_to_use_disk_cache>
+        <min_relative_delay_to_close>300</min_relative_delay_to_close>
+        <max_delay_to_insert>1</max_delay_to_insert>
+        <!-- Aggressive TTL materialisation -->
+        <ttl_only_drop_parts>1</ttl_only_drop_parts>
+        <final>0</final>
+    </merge_tree>
+
+    <!-- Allow embedded dictionaries -->
+    <allow_deprecated_syntax_for_merge_tree>1</allow_deprecated_syntax_for_merge_tree>
+
+    <!-- Timezone -->
+    <timezone>UTC</timezone>
+    <logger>
+        <level>warning</level>
+        <console>1</console>
+    </logger>
+
+    <!-- Query memory limits -->
+    <max_memory_usage>10000000000</max_memory_usage>
+    <max_memory_usage_for_user>10000000000</max_memory_usage_for_user>
+</clickhouse>
