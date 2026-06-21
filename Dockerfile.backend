@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1.6
+# ---------- Stage 1: Builder ----------
+FROM rust:1.78-bookworm AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add x86_64-unknown-linux-musl
+
+COPY Cargo.toml Cargo.lock* ./
+COPY config ./config
+COPY src ./src
+
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release --target x86_64-unknown-linux-musl \
+    && cp /app/target/x86_64-unknown-linux-musl/release/spindle-backend /spindle-backend
+
+# ---------- Stage 2: Runtime (static binary + distroless) ----------
+FROM gcr.io/distroless/static:nonroot
+
+WORKDIR /app
+COPY --from=builder /spindle-backend /usr/local/bin/spindle-backend
+COPY config ./config
+
+ENV RUST_LOG=info
+ENV APP_CONFIG_PATH=/app/config/app_config.json
+
+EXPOSE 3000 9090
+
+USER nonroot:nonroot
+
+CMD ["spindle-backend"]
