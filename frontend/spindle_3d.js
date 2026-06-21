@@ -1,6 +1,61 @@
 const LOD = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 const LOD_NAMES = ['HIGH', 'MEDIUM', 'LOW'];
 
+const MATERIAL_PRESETS = {
+    wood: {
+        shaftColor: 0x6b4423,
+        shaftMetalness: 0.1,
+        shaftRoughness: 0.75,
+        whorlColor: 0x4a3728,
+        whorlMetalness: 0.05,
+        whorlRoughness: 0.85,
+        baseColor: 0x3a2a1c,
+        pillarColor: 0x8b6f47,
+        pillarMetalness: 0.05,
+    },
+    copper: {
+        shaftColor: 0xb87333,
+        shaftMetalness: 0.85,
+        shaftRoughness: 0.35,
+        whorlColor: 0xa0622d,
+        whorlMetalness: 0.7,
+        whorlRoughness: 0.4,
+        baseColor: 0x4a3728,
+        pillarColor: 0x9c7b4f,
+        pillarMetalness: 0.6,
+    },
+    iron: {
+        shaftColor: 0x8899aa,
+        shaftMetalness: 0.9,
+        shaftRoughness: 0.25,
+        whorlColor: 0x7a8a9a,
+        whorlMetalness: 0.8,
+        whorlRoughness: 0.3,
+        baseColor: 0x3a3a44,
+        pillarColor: 0x8a99aa,
+        pillarMetalness: 0.85,
+    }
+};
+
+const ERA_PRESETS = {
+    ancient_yuan: {
+        shaftLenScale: 1.2,
+        shaftDiaScale: 1.5,
+        whorlScale: 1.3,
+        baseScale: 1.15,
+        label: '元代水转大纺车',
+        labelColor: 0xf59e0b,
+    },
+    modern_high_speed: {
+        shaftLenScale: 0.85,
+        shaftDiaScale: 0.75,
+        whorlScale: 0.8,
+        baseScale: 0.9,
+        label: '现代环锭细纱机',
+        labelColor: 0x06b6d4,
+    }
+};
+
 const spindleGroup = new THREE.Group();
 let spindleMesh = null;
 let bearingMesh = null;
@@ -9,6 +64,12 @@ let yarnLodObjects = [];
 let currentLod = LOD.HIGH;
 let motionBlurGroup = null;
 let whirlGlow = null;
+let whorlMesh = null;
+let baseMesh = null;
+let pillarMesh = null;
+let topBearingMesh = null;
+let topCapMesh = null;
+let eraLabel = null;
 let scene, camera, renderer, controls;
 let vibX = 0, vibY = 0;
 let currentRpm = 0;
@@ -16,6 +77,8 @@ let lastFrameTime = performance.now();
 let frameTimeHistory = [];
 let yarnBuildParams = null;
 let simulationData = null;
+let currentMaterialId = 'iron';
+let currentEraId = null;
 
 let updateDisplayCallback = null;
 let addAlertsCallback = null;
@@ -89,59 +152,93 @@ function initThreeScene() {
     });
 }
 
-function buildSpindleModel() {
+function buildSpindleModel(materialId = 'iron', eraId = null) {
     while (spindleGroup.children.length) {
         spindleGroup.remove(spindleGroup.children[0]);
     }
+    currentMaterialId = materialId;
+    currentEraId = eraId;
 
-    const baseMat = new THREE.MeshStandardMaterial({ color: 0x4a3728, roughness: 0.7, metalness: 0.3 });
-    const metalMat = new THREE.MeshStandardMaterial({ color: 0x8899aa, roughness: 0.3, metalness: 0.8 });
+    const mat = MATERIAL_PRESETS[materialId] || MATERIAL_PRESETS.iron;
+    const era = eraId ? (ERA_PRESETS[eraId] || null) : null;
+
+    const shaftLenScale = era ? era.shaftLenScale : 1.0;
+    const shaftDiaScale = era ? era.shaftDiaScale : 1.0;
+    const whorlScale = era ? era.whorlScale : 1.0;
+    const baseScale = era ? era.baseScale : 1.0;
+
+    const baseMat = new THREE.MeshStandardMaterial({ color: mat.baseColor, roughness: 0.7, metalness: 0.3 });
+    const metalMat = new THREE.MeshStandardMaterial({
+        color: mat.shaftColor,
+        roughness: mat.shaftRoughness,
+        metalness: mat.shaftMetalness
+    });
+    const pillarMat = new THREE.MeshStandardMaterial({
+        color: mat.pillarColor,
+        roughness: 0.4,
+        metalness: mat.pillarMetalness
+    });
     const bearingMat = new THREE.MeshStandardMaterial({ color: 0xb8860b, roughness: 0.4, metalness: 0.6 });
-    const whorlMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.6, metalness: 0.2 });
+    const whorlMat = new THREE.MeshStandardMaterial({
+        color: mat.whorlColor,
+        roughness: mat.whorlRoughness,
+        metalness: mat.whorlMetalness
+    });
 
-    const baseGeo = new THREE.CylinderGeometry(0.6, 0.7, 0.15, 32);
-    const base = new THREE.Mesh(baseGeo, baseMat);
-    base.position.y = 0.075;
-    base.castShadow = true;
-    spindleGroup.add(base);
+    const baseGeo = new THREE.CylinderGeometry(0.6 * baseScale, 0.7 * baseScale, 0.15 * baseScale, 32);
+    baseMesh = new THREE.Mesh(baseGeo, baseMat);
+    baseMesh.position.y = 0.075 * baseScale;
+    baseMesh.castShadow = true;
+    spindleGroup.add(baseMesh);
 
-    const basePillarGeo = new THREE.CylinderGeometry(0.08, 0.1, 0.4, 16);
-    const basePillar = new THREE.Mesh(basePillarGeo, metalMat);
-    basePillar.position.y = 0.35;
-    basePillar.castShadow = true;
-    spindleGroup.add(basePillar);
+    const pillarH = 0.4 * baseScale;
+    const basePillarGeo = new THREE.CylinderGeometry(0.08 * baseScale, 0.1 * baseScale, pillarH, 16);
+    pillarMesh = new THREE.Mesh(basePillarGeo, pillarMat);
+    pillarMesh.position.y = 0.075 * baseScale + pillarH / 2;
+    pillarMesh.castShadow = true;
+    spindleGroup.add(pillarMesh);
 
-    const bearingGeo = new THREE.TorusGeometry(0.12, 0.04, 16, 32);
+    const bearingY = 0.075 * baseScale + pillarH + 0.12 * baseScale;
+    const bearingGeo = new THREE.TorusGeometry(0.12 * baseScale, 0.04, 16, 32);
     bearingMesh = new THREE.Mesh(bearingGeo, bearingMat);
-    bearingMesh.position.y = 0.55;
+    bearingMesh.position.y = bearingY;
     bearingMesh.rotation.x = Math.PI / 2;
     bearingMesh.castShadow = true;
     spindleGroup.add(bearingMesh);
 
-    const shaftGeo = new THREE.CylinderGeometry(0.02, 0.025, 3.0, 16);
+    const shaftLen = 3.0 * shaftLenScale;
+    const shaftTopR = 0.02 * shaftDiaScale;
+    const shaftBotR = 0.025 * shaftDiaScale;
+    const shaftGeo = new THREE.CylinderGeometry(shaftTopR, shaftBotR, shaftLen, 16);
+    const shaftY = bearingY + shaftLen / 2;
     spindleMesh = new THREE.Mesh(shaftGeo, metalMat);
-    spindleMesh.position.y = 2.05;
+    spindleMesh.position.y = shaftY;
     spindleMesh.castShadow = true;
     spindleGroup.add(spindleMesh);
 
-    const whorlGeo = new THREE.CylinderGeometry(0.25, 0.15, 0.12, 32);
-    const whorl = new THREE.Mesh(whorlGeo, whorlMat);
-    whorl.position.y = 1.0;
-    whorl.castShadow = true;
-    spindleGroup.add(whorl);
+    const whorlR1 = 0.25 * whorlScale;
+    const whorlR2 = 0.15 * whorlScale;
+    const whorlH = 0.12 * whorlScale;
+    const whorlGeo = new THREE.CylinderGeometry(whorlR1, whorlR2, whorlH, 32);
+    const whorlY = bearingY + shaftLen * 0.3;
+    whorlMesh = new THREE.Mesh(whorlGeo, whorlMat);
+    whorlMesh.position.y = whorlY;
+    whorlMesh.castShadow = true;
+    spindleGroup.add(whorlMesh);
 
-    const topBearingGeo = new THREE.TorusGeometry(0.06, 0.02, 12, 24);
-    const topBearing = new THREE.Mesh(topBearingGeo, bearingMat);
-    topBearing.position.y = 3.55;
-    topBearing.rotation.x = Math.PI / 2;
-    spindleGroup.add(topBearing);
+    const topBearingY = bearingY + shaftLen + 0.05 * shaftLenScale;
+    const topBearingGeo = new THREE.TorusGeometry(0.06 * shaftDiaScale, 0.02, 12, 24);
+    topBearingMesh = new THREE.Mesh(topBearingGeo, bearingMat);
+    topBearingMesh.position.y = topBearingY;
+    topBearingMesh.rotation.x = Math.PI / 2;
+    spindleGroup.add(topBearingMesh);
 
-    const topCapGeo = new THREE.ConeGeometry(0.04, 0.1, 16);
-    const topCap = new THREE.Mesh(topCapGeo, metalMat);
-    topCap.position.y = 3.6;
-    spindleGroup.add(topCap);
+    const topCapGeo = new THREE.ConeGeometry(0.04 * shaftDiaScale, 0.1 * shaftLenScale, 16);
+    topCapMesh = new THREE.Mesh(topCapGeo, metalMat);
+    topCapMesh.position.y = topBearingY + 0.05 * shaftLenScale;
+    spindleGroup.add(topCapMesh);
 
-    const glowGeo = new THREE.RingGeometry(0.08, 0.12, 32);
+    const glowGeo = new THREE.RingGeometry(0.08 * shaftDiaScale, 0.12 * shaftDiaScale, 32);
     const glowMat = new THREE.MeshBasicMaterial({
         color: 0xef4444,
         transparent: true,
@@ -149,11 +246,48 @@ function buildSpindleModel() {
         side: THREE.DoubleSide,
     });
     whirlGlow = new THREE.Mesh(glowGeo, glowMat);
-    whirlGlow.position.y = 2.05;
+    whirlGlow.position.y = shaftY;
     whirlGlow.rotation.x = Math.PI / 2;
     spindleGroup.add(whirlGlow);
 
+    if (era) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0,0,0,0)';
+        ctx.clearRect(0, 0, 512, 128);
+        const col = '#' + era.labelColor.toString(16).padStart(6, '0');
+        ctx.font = 'bold 48px "Noto Serif SC", serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+        ctx.lineWidth = 6;
+        ctx.strokeText(era.label, 256, 64);
+        ctx.fillStyle = col;
+        ctx.fillText(era.label, 256, 64);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.anisotropy = 8;
+        const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+        eraLabel = new THREE.Sprite(spriteMat);
+        eraLabel.position.set(0, topBearingY + 0.5 * shaftLenScale, 0);
+        eraLabel.scale.set(2.5, 0.625, 1);
+        spindleGroup.add(eraLabel);
+    }
+
     buildYarnOnSpindle();
+}
+
+function setSpindleMaterial(materialId) {
+    buildSpindleModel(materialId, currentEraId);
+}
+
+function setSpindleEra(eraId) {
+    buildSpindleModel(currentMaterialId, eraId);
+}
+
+function setCurrentRpm(rpm) {
+    currentRpm = rpm;
 }
 
 function buildYarnGeometry(params, lodLevel) {

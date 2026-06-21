@@ -74,5 +74,94 @@
     "critical_speed_tolerance_pct": 10.0,
     "temperature_warning_c": 60.0,
     "temperature_critical_c": 80.0
+  },
+  "material_profiles": {
+    "wood": {
+      "material_id": "wood",
+      "display_name": "古代木锭 (铁木混合)",
+      "density_kg_m3": 750.0,
+      "youngs_modulus_pa": 10000000000.0,
+      "yield_strength_pa": 60000000.0,
+      "thermal_expansion_per_c": 0.000005,
+      "damping_ratio_factor": 3.5,
+      "surface_friction_coeff": 0.35,
+      "quality_factor": 0.85,
+      "color_hex": "#6b4423",
+      "era_compatibility": ["ancient_yuan"]
+    },
+    "copper": {
+      "material_id": "copper",
+      "display_name": "青铜铜锭 (春秋战国-汉代)",
+      "density_kg_m3": 8960.0,
+      "youngs_modulus_pa": 120000000000.0,
+      "yield_strength_pa": 200000000.0,
+      "thermal_expansion_per_c": 0.000017,
+      "damping_ratio_factor": 1.8,
+      "surface_friction_coeff": 0.15,
+      "quality_factor": 0.92,
+      "color_hex": "#b87333",
+      "era_compatibility": ["ancient_yuan", "modern_high_speed"]
+    },
+    "iron": {
+      "material_id": "iron",
+      "display_name": "现代钢锭 (高速轴承钢)",
+      "density_kg_m3": 7850.0,
+      "youngs_modulus_pa": 210000000000.0,
+      "yield_strength_pa": 350000000.0,
+      "thermal_expansion_per_c": 0.000012,
+      "damping_ratio_factor": 1.0,
+      "surface_friction_coeff": 0.08,
+      "quality_factor": 1.0,
+      "color_hex": "#8899aa",
+      "era_compatibility": ["ancient_yuan", "modern_high_speed"]
+    }
+  },
+  "era_profiles": {
+    "ancient_yuan": {
+      "era_id": "ancient_yuan",
+      "display_name": "元代水转大纺车 (13-14世纪)",
+      "era_year": "公元1280-1368",
+      "description": "《农书》记载32锭水转大纺车，水力驱动，每日可纺纱百余斤，是中世纪纺织史的巅峰技术。",
+      "default_material": "wood",
+      "base_rpm_min": 200.0,
+      "base_rpm_max": 800.0,
+      "typical_rpm": 500.0,
+      "unbalance_tolerance_m": 0.0005,
+      "surface_roughness_factor": 2.5,
+      "manufacturing_precision_factor": 5.0,
+      "bearing_technology": "木轴套/青铜瓦 油润滑",
+      "typical_yarn": "麻/丝混纺 20-40公支",
+      "rpm_scaling_factor": 0.25,
+      "shaft_length_factor": 1.2,
+      "shaft_diameter_factor": 1.5
+    },
+    "modern_high_speed": {
+      "era_id": "modern_high_speed",
+      "display_name": "现代环锭细纱机 (21世纪)",
+      "era_year": "公元2000-至今",
+      "description": "精密轴承钢锭，弹性阻尼轴承座，主动动平衡，锭速可达25000rpm，是当代纺织工业标准设备。",
+      "default_material": "iron",
+      "base_rpm_min": 8000.0,
+      "base_rpm_max": 25000.0,
+      "typical_rpm": 18000.0,
+      "unbalance_tolerance_m": 0.000002,
+      "surface_roughness_factor": 0.3,
+      "manufacturing_precision_factor": 0.05,
+      "bearing_technology": "SKF双列角接触陶瓷球轴承 油气润滑",
+      "typical_yarn": "纯棉精梳 40-200公支",
+      "rpm_scaling_factor": 10.0,
+      "shaft_length_factor": 0.8,
+      "shaft_diameter_factor": 0.7
+    }
+  },
+  "balance_correction": {
+    "max_correction_weight_grams": 50.0,
+    "max_correction_angle_deg": 360.0,
+    "balance_planes": 2,
+    "initial_residual_unbalance_m": 0.0001,
+    "target_residual_unbalance_m": 0.000001,
+    "correction_step_fraction": 0.15,
+    "vibration_reduction_expectation": 0.7,
+    "calibration_weights_grams": [1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
   }
 }

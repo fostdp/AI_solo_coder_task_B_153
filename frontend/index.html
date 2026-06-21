@@ -47,10 +47,116 @@
             </div>
         </div>
 
+        <div class="panel control-panel">
+            <div class="panel-header">
+                <span>🎛 虚拟操作体验台</span>
+                <button class="simulate-btn" id="simulate-btn">⚡ 立即仿真</button>
+            </div>
+            <div class="panel-body">
+                <div class="control-section">
+                    <div class="control-title">🔄 转速调节 (水轮/电机)</div>
+                    <div class="rpm-control">
+                        <div class="rpm-display">
+                            <span class="rpm-number" id="rpm-display">500</span>
+                            <span class="rpm-unit">RPM</span>
+                        </div>
+                        <input type="range" id="rpm-slider" min="100" max="25000" step="50" value="500" class="rpm-slider">
+                        <div class="rpm-presets">
+                            <button class="rpm-preset" data-rpm="300">300</button>
+                            <button class="rpm-preset" data-rpm="1000">1k</button>
+                            <button class="rpm-preset" data-rpm="3500">3.5k</button>
+                            <button class="rpm-preset" data-rpm="10000">10k</button>
+                            <button class="rpm-preset" data-rpm="18000">18k</button>
+                            <button class="rpm-preset" data-rpm="25000">25k</button>
+                        </div>
+                        <div class="rpm-scale-bar">
+                            <div class="rpm-scale ancient" title="古代水转纺车典型">古代 200-800</div>
+                            <div class="rpm-scale modern" title="现代高速纺锭">现代 8k-25k</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <div class="control-title">⚙️ 锭子材料</div>
+                    <div class="material-selector">
+                        <button class="material-btn active" data-material="iron" title="现代高速轴承钢">
+                            <span class="material-dot" style="background:#8899aa"></span>
+                            <span class="material-name">钢铁锭</span>
+                            <span class="material-desc">现代高速</span>
+                        </button>
+                        <button class="material-btn" data-material="copper" title="古代青铜工艺">
+                            <span class="material-dot" style="background:#b87333"></span>
+                            <span class="material-name">青铜锭</span>
+                            <span class="material-desc">战国-汉代</span>
+                        </button>
+                        <button class="material-btn" data-material="wood" title="元代水转大纺车铁木混合">
+                            <span class="material-dot" style="background:#6b4423"></span>
+                            <span class="material-name">铁木锭</span>
+                            <span class="material-desc">元代水转</span>
+                        </button>
+                    </div>
+                    <div id="material-info" class="material-info"></div>
+                </div>
+
+                <div class="control-section">
+                    <div class="control-title">🕰️ 时代切换</div>
+                    <div class="era-selector">
+                        <button class="era-btn" data-era="ancient_yuan">
+                            <span class="era-icon">🏛️</span>
+                            <span class="era-name">元代水转</span>
+                            <span class="era-year">13-14世纪</span>
+                        </button>
+                        <button class="era-btn active" data-era="modern_high_speed">
+                            <span class="era-icon">🏭</span>
+                            <span class="era-name">现代环锭</span>
+                            <span class="era-year">21世纪</span>
+                        </button>
+                        <button class="era-btn" data-era="">
+                            <span class="era-icon">📐</span>
+                            <span class="era-name">基准模型</span>
+                            <span class="era-year">原始参数</span>
+                        </button>
+                    </div>
+                    <div id="era-info" class="era-info"></div>
+                </div>
+
+                <div class="control-section">
+                    <div class="control-title">⚖️ 动平衡校正</div>
+                    <div class="balance-control">
+                        <div class="balance-grid">
+                            <div class="balance-cell">
+                                <span class="balance-label">初始不平衡</span>
+                                <div class="balance-row">
+                                    <input type="range" id="balance-initial" min="0.1" max="500" step="0.1" value="100" class="balance-slider">
+                                    <span class="balance-value" id="balance-initial-val">100 μm</span>
+                                </div>
+                            </div>
+                            <div class="balance-cell">
+                                <span class="balance-label">目标精度</span>
+                                <div class="balance-row">
+                                    <input type="range" id="balance-target" min="0.01" max="50" step="0.01" value="1" class="balance-slider">
+                                    <span class="balance-value" id="balance-target-val">1 μm</span>
+                                </div>
+                            </div>
+                        </div>
+                        <button class="balance-btn" id="balance-btn">🔧 执行平衡校正</button>
+                        <div id="balance-result" class="balance-result"></div>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <div class="control-title">📊 对比分析</div>
+                    <div class="compare-buttons">
+                        <button class="compare-btn" id="compare-materials">🪵 材料振动特性对比</button>
+                        <button class="compare-btn" id="compare-eras">🕰️ 跨时代纺锭对比</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="panel sensor-panel">
             <div class="panel-header">
-                <span>传感器数据</span>
-                <button class="simulate-btn" id="simulate-btn">仿真计算</button>
+                <span>📡 传感器数据</span>
             </div>
             <div class="panel-body">
                 <div class="sensor-grid">
@@ -100,13 +206,29 @@
                         </div>
                         <div class="bar-track"><div class="bar-fill" id="bar-impact" style="width:0%;background:var(--accent-amber)"></div></div>
                     </div>
+                    <div id="context-info" class="context-info"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel compare-panel">
+            <div class="panel-header">
+                <span id="compare-title">📈 对比分析面板</span>
+                <button id="compare-close" class="close-btn" style="display:none;">✕</button>
+            </div>
+            <div class="panel-body">
+                <div id="compare-content" class="compare-content">
+                    <div class="compare-placeholder">
+                        <div class="placeholder-icon">📊</div>
+                        <div class="placeholder-text">选择上面的对比按钮<br/>开始材料或跨时代对比分析</div>
+                    </div>
                 </div>
             </div>
         </div>
 
         <div class="panel alert-panel">
             <div class="panel-header">
-                <span>告警</span>
+                <span>🚨 告警</span>
                 <span id="alert-count" style="color:var(--accent-red)">0</span>
             </div>
             <div class="panel-body">

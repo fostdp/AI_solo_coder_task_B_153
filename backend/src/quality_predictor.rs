@@ -1,4 +1,4 @@
-use crate::config::RegressionModelConfig;
+use crate::config::{EraProfile, MaterialProfile, RegressionModelConfig};
 use crate::metrics::Metrics;
 use rand::Rng;
 use serde::Serialize;
@@ -18,6 +18,37 @@ pub struct YarnQualityResult {
     pub beta1: f64,
     pub alpha0: f64,
     pub alpha1: f64,
+    pub material_boost: f64,
+    pub era_boost: f64,
+    pub balance_recovery: f64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct MaterialComparisonResult {
+    pub material_id: String,
+    pub display_name: String,
+    pub critical_rpm: f64,
+    pub total_displacement_mm: f64,
+    pub uniformity: f64,
+    pub strength: f64,
+    pub whirl_risk: f64,
+    pub cost_index: f64,
+    pub relative_density: f64,
+    pub damping_ratio_factor: f64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct EraComparisonResult {
+    pub era_id: String,
+    pub display_name: String,
+    pub typical_rpm: f64,
+    pub critical_rpm: f64,
+    pub total_displacement_mm: f64,
+    pub uniformity: f64,
+    pub strength: f64,
+    pub daily_output_kg: f64,
+    pub manufacturing_precision: f64,
+    pub bearing_technology: String,
 }
 
 #[derive(Clone, Debug)]
@@ -289,7 +320,41 @@ impl QualityPredictor {
             beta1: state.beta1,
             alpha0: state.alpha0,
             alpha1: state.alpha1,
+            material_boost: 1.0,
+            era_boost: 1.0,
+            balance_recovery: 0.0,
         }
+    }
+
+    pub fn predict_with_context(
+        &self,
+        spindle_id: &str,
+        vibration_amplitude: f64,
+        twist_per_meter: f64,
+        timestamp_seconds: f64,
+        material: Option<&MaterialProfile>,
+        era: Option<&EraProfile>,
+        balance_correction_fraction: Option<f64>,
+    ) -> YarnQualityResult {
+        let material_boost = material.map(|m| m.quality_factor).unwrap_or(1.0);
+        let era_boost = era
+            .map(|e| 1.0 / e.manufacturing_precision_factor.sqrt().max(0.5))
+            .unwrap_or(1.0);
+        let effective_twist = if let Some(e) = era {
+            twist_per_meter * (1.0 + (e.rpm_scaling_factor - 1.0) * 0.1)
+        } else {
+            twist_per_meter
+        };
+        let balance_recovery = balance_correction_fraction.unwrap_or(0.0);
+        let effective_vib = vibration_amplitude * (1.0 - balance_recovery * 0.7);
+
+        let mut result = self.predict(spindle_id, effective_vib, effective_twist, timestamp_seconds);
+        result.predicted_uniformity *= material_boost * era_boost;
+        result.predicted_strength *= material_boost * era_boost;
+        result.material_boost = material_boost;
+        result.era_boost = era_boost;
+        result.balance_recovery = balance_recovery;
+        result
     }
 }
 
