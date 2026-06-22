@@ -1,0 +1,969 @@
+const API_BASE = 'http://localhost:3000';
+const ALERT_MQTT_WS = 'ws://localhost:9001';
+
+let currentSpindle = 'SPD-001';
+let simulationData = null;
+let vibrationHistoryX = [];
+let vibrationHistoryY = [];
+const MAX_HISTORY = 200;
+let alertList = [];
+let stompClient = null;
+
+let currentTab = 'realtime';
+let isDemoPlaying = true;
+let demoRpm = 1500;
+let demoOverrideRpm = null;
+let currentMaterial = 'iron';
+let currentEra = null;
+let balanceCorrectionFraction = 0;
+let yarnBuildParams = null;
+let threeScene = null;
+let threeRenderer = null;
+let threeCamera = null;
+let animationFrameId = null;
+let lastFrameTime = 0;
+let fpsHistory = [];
+let currentLodLevel = 0;
+
+const MATERIAL_INFO_MAP = {
+    iron: '现代高速轴承钢 · 密度7.85g/cm³ · E=210GPa · 阻尼比基准1.0 · 高精度加工，振动最小，适合8000-25000RPM高速运转。',
+    copper: '古代青铜工艺 · 密度8.96g/cm³ · E=120GPa · 阻尼比1.8x · 战国-汉代即用于纺锭，比铁木更耐磨，但重量偏大。',
+    wood: '元代铁木混合木锭 · 密度0.75g/cm³ · E=10GPa · 阻尼比3.5x · 水转大纺车的标准材料，高阻尼减振好但刚度低、临界转速低。'
+};
+
+const ERA_INFO_MAP = {
+    ancient_yuan: '元代水转大纺车 (1280-1368) · 水力驱动 · 典型500RPM · 铁木混合锭 · 木轴套/青铜瓦轴承 · 《王祯农书》记载日纺麻百余斤，中世纪纺织机械的巅峰。',
+    modern_high_speed: '现代环锭细纱机 (21世纪) · 电机驱动 · 典型18000RPM · 轴承钢锭 · SKF双列陶瓷球轴承油气润滑 · 日产量达数百公斤，是当代纺织工业标准设备。'
+};
+
+function formatNumber(n, digits) {
+    if (n === undefined || n === null || !isFinite(n)) return '--';
+    return Number(n).toFixed(digits || 2);
+}
+
+function createBaseRotorConfig() {
+    return {
+        mass_kg: 0.5,
+        shaft_length_m: 0.3,
+        shaft_diameter_m: 0.008,
+        youngs_modulus_pa: 210e9
+    };
+}
+
+function initVibrationCanvas() {
+    const canvas = document.getElementById('vibration-canvas');
+    if (!canvas) return;
+    canvas.width = canvas.offsetWidth * 2;
+    canvas.height = 240;
+}
+
+function drawVibrationWaveform() {
+    const canvas = document.getElementById('vibration-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.strokeStyle = '#1a2332';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+
+    for (let i = 1; i <= 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(0, h / 2 + (h / 8) * i);
+        ctx.lineTo(w, h / 2 + (h / 8) * i);
+        ctx.moveTo(0, h / 2 - (h / 8) * i);
+        ctx.lineTo(w, h / 2 - (h / 8) * i);
+        ctx.strokeStyle = 'rgba(42,58,78,0.3)';
+        ctx.stroke();
+    }
+
+    if (vibrationHistoryX.length > 1) {
+        ctx.beginPath();
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < vibrationHistoryX.length; i++) {
+            const x = (i / MAX_HISTORY) * w;
+            const y = h / 2 - vibrationHistoryX[i] * h * 0.4;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < vibrationHistoryY.length; i++) {
+            const x = (i / MAX_HISTORY) * w;
+            const y = h / 2 - vibrationHistoryY[i] * h * 0.4;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
+
+    ctx.font = '20px sans-serif';
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillText('X', 10, 24);
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillText('Y', 40, 24);
+
+    if (simulationData && simulationData.vibration.whirl_instability) {
+        ctx.font = 'bold 24px sans-serif';
+        ctx.fillStyle = '#ef4444';
+        ctx.fillText('⚠ 油膜涡动不稳定', w - 280, 30);
+    }
+}
+
+function updateSensorDisplay(data) {
+    document.getElementById('val-rpm').textContent = data.rpm.toFixed(0);
+    document.getElementById('val-vib').textContent = data.vibration_amplitude.toFixed(3);
+    document.getElementById('val-temp').textContent = data.temperature.toFixed(1);
+    document.getElementById('val-twist').textContent = data.twist_per_meter.toFixed(0);
+
+    if (typeof setCurrentRpm === 'function') {
+        setCurrentRpm(data.rpm);
+    }
+}
+
+function renderContextInfo(sim) {
+    const el = document.getElementById('context-info');
+    if (!el) return;
+    const yq = sim.yarn_quality;
+    let html = '';
+    if (yq.material_boost !== undefined && yq.material_boost !== 1.0) {
+        const cls = yq.material_boost > 1 ? 'boost-pos' : 'boost-neg';
+        html += `<div>材料增益: <span class="${cls}">${(yq.material_boost * 100 - 100).toFixed(1)}%</span></div>`;
+    }
+    if (yq.era_boost !== undefined && yq.era_boost !== 1.0) {
+        const cls = yq.era_boost > 1 ? 'boost-pos' : 'boost-neg';
+        html += `<div>时代工艺增益: <span class="${cls}">${(yq.era_boost * 100 - 100).toFixed(1)}%</span></div>`;
+    }
+    if (yq.balance_recovery !== undefined && yq.balance_recovery > 0) {
+        html += `<div>动平衡减振: <span class="boost-pos">${(yq.balance_recovery * 100).toFixed(0)}%</span></div>`;
+    }
+    el.innerHTML = html || '';
+}
+
+function updateSimulationDisplay(sim) {
+    simulationData = sim;
+    if (typeof setSimulationData === 'function') {
+        setSimulationData(sim);
+    }
+
+    document.getElementById('overlay-critical').textContent = sim.vibration.critical_rpm.toFixed(0) + ' RPM';
+    document.getElementById('overlay-displacement').textContent = sim.vibration.total_displacement.toFixed(4) + ' mm';
+    document.getElementById('overlay-whirl').textContent = sim.vibration.whirl_ratio.toFixed(2);
+
+    const uniformity = Math.max(0, Math.min(100, sim.yarn_quality.predicted_uniformity));
+    const strength = Math.max(0, Math.min(30, sim.yarn_quality.predicted_strength));
+    const impact = Math.max(0, Math.min(1, sim.yarn_quality.vibration_impact_factor));
+
+    document.getElementById('val-uniformity').textContent = uniformity.toFixed(1) + '%';
+    document.getElementById('val-strength').textContent = strength.toFixed(1) + ' cN/tex';
+    document.getElementById('val-impact').textContent = impact.toFixed(3);
+
+    document.getElementById('bar-uniformity').style.width = uniformity + '%';
+    document.getElementById('bar-strength').style.width = (strength / 30 * 100) + '%';
+    document.getElementById('bar-impact').style.width = (impact * 100) + '%';
+
+    const vx = sim.vibration.vibration_x;
+    const vy = sim.vibration.vibration_y;
+    vibrationHistoryX.push(vx > 0 ? Math.min(vx * 100, 1) : Math.max(vx * 100, -1));
+    vibrationHistoryY.push(vy > 0 ? Math.min(vy * 100, 1) : Math.max(vy * 100, -1));
+    if (vibrationHistoryX.length > MAX_HISTORY) vibrationHistoryX.shift();
+    if (vibrationHistoryY.length > MAX_HISTORY) vibrationHistoryY.shift();
+
+    drawVibrationWaveform();
+
+    const wearEl = document.getElementById('val-wear');
+    if (wearEl && sim.yarn_quality.wear_coefficient !== undefined) {
+        wearEl.textContent = (sim.yarn_quality.wear_coefficient * 1000).toFixed(1) + '‰';
+    }
+
+    if (typeof updateSpindleVibration === 'function') {
+        updateSpindleVibration(
+            sim.vibration.total_displacement,
+            sim.vibration.whirl_instability,
+            sim.vibration.whirl_ratio
+        );
+    }
+
+    renderContextInfo(sim);
+    if (typeof updateForceFeedback === 'function') {
+        updateForceFeedback(sim.vibration.rpm || demoOverrideRpm || 500, sim.vibration.critical_rpm);
+    }
+}
+
+function addAlerts(alerts) {
+    const container = document.getElementById('alert-list');
+    if (!container) return;
+    const emptyEl = container.querySelector('.empty-alerts');
+    if (emptyEl) emptyEl.remove();
+
+    for (const alert of alerts) {
+        const item = document.createElement('div');
+        item.className = 'alert-item';
+        const iconClass = alert.severity === 'critical' ? 'critical' : 'warning';
+        const titleMap = {
+            vibration_overload: '振动超限',
+            twist_uneven: '捻度不均',
+            critical_speed: '临界转速',
+            temperature_high: '温度过高',
+        };
+        item.innerHTML = `
+            <div class="alert-icon ${iconClass}">${alert.severity === 'critical' ? '🔴' : '🟡'}</div>
+            <div class="alert-content">
+                <div class="alert-title">${titleMap[alert.alert_type] || alert.alert_type}</div>
+                <div class="alert-desc">${alert.message}</div>
+                <div class="alert-time">${new Date(alert.timestamp).toLocaleTimeString()}</div>
+            </div>
+        `;
+        container.insertBefore(item, container.firstChild);
+        alertList.unshift(alert);
+        if (alertList.length > 50) alertList.pop();
+    }
+}
+
+function connectAlertWebSocket() {
+    try {
+        const ws = new WebSocket(ALERT_MQTT_WS);
+        ws.onopen = () => console.log('Alert WebSocket connected');
+        ws.onmessage = (event) => {
+            try {
+                const alert = JSON.parse(event.data);
+                addAlerts([alert]);
+            } catch (e) {}
+        };
+        ws.onerror = (e) => console.warn('Alert WS error', e);
+        ws.onclose = () => setTimeout(connectAlertWebSocket, 5000);
+    } catch (e) {
+        setTimeout(connectAlertWebSocket, 5000);
+    }
+}
+
+function generateDemoData() {
+    const rpm = 1500 + 200 * Math.sin(Date.now() / 2000) + (Math.random() - 0.5) * 60;
+    const vibAmp = 0.15 + 0.1 * Math.sin(Date.now() / 3000) + Math.random() * 0.02;
+    const temp = 35 + rpm / 1000 * 5 + (Math.random() - 0.5) * 2;
+    const twist = 800 + 50 * Math.sin(Date.now() / 5000) + (Math.random() - 0.5) * 40;
+
+    return { rpm, vibration_amplitude: vibAmp, temperature: temp, twist_per_meter: twist };
+}
+
+function computeLocalSimulation(rpm, vibAmp, temperature, twist) {
+    const m = 0.5;
+    const L = 0.3;
+    const d = 0.008;
+    const E = 210e9;
+    const I_shaft = Math.PI * Math.pow(d, 4) / 64;
+    const k_shaft = 48 * E * I_shaft / Math.pow(L, 3);
+    const omega_cr = Math.sqrt(k_shaft / m);
+    const critical_rpm = omega_cr * 60 / (2 * Math.PI);
+
+    const omega = rpm * 2 * Math.PI / 60;
+    const r = omega / omega_cr;
+    const e_unbalance = 0.0001;
+    const zeta = 0.02;
+    const unbalance_response = e_unbalance * r * r / Math.sqrt(Math.pow(1 - r * r, 2) + Math.pow(2 * zeta * r, 2));
+
+    const mu = 0.01;
+    const bL = 0.02;
+    const bD = 0.016;
+    const bR = 0.008;
+    const c = 0.00005;
+    const g = 9.81;
+    const W = m * g;
+    const n_rps = rpm / 60;
+    const S = (mu * n_rps * bL * bD) / W * Math.pow(bR / c, 2);
+    const eccentricity_ratio = 1 - 1 / (2 * S + 1);
+
+    const eps = Math.min(0.95, Math.max(0.01, eccentricity_ratio));
+    const k0 = mu * omega * bL * Math.pow(bR / c, 3) / (2 * Math.PI);
+    const c0 = mu * bL * Math.pow(bR / c, 3) / (2 * Math.PI);
+    const k_xx = k0 * (1 + 2 * eps * eps);
+    const k_yy = k0 * (1 - 2 * eps * eps);
+    const c_xx_linear = c0 * (1 + eps * eps);
+    const c_yy_linear = c0 * (1 - eps * eps);
+
+    const theta = omega * 0.1;
+    const denom = 1 + eps * Math.cos(theta);
+    const pressure_peak = Math.abs((mu * omega * bR * bR / (c * c)) * eps * Math.sin(theta) * (2/3) / (denom * denom));
+
+    let threshold = 0.55;
+    if (eps < 0.3) threshold = 0.45;
+    else if (eps < 0.6) threshold = 0.5;
+    const whirl_instability = r > threshold && eps > 0.2;
+    let whirl_ratio = 0.5;
+    if (whirl_instability) {
+        const factor = 1 + 0.3 * (r - threshold) / Math.max(0.01, 1 - threshold);
+        whirl_ratio = 0.5 * factor;
+    }
+
+    const F0 = m * e_unbalance * omega * omega;
+    let vib_x_linear = F0 / Math.sqrt(Math.pow(k_xx - m * omega * omega, 2) + Math.pow(c_xx_linear * omega, 2));
+    let vib_y_linear = F0 / Math.sqrt(Math.pow(k_yy - m * omega * omega, 2) + Math.pow(c_yy_linear * omega, 2));
+
+    const alpha_nonlinear = 5e6;
+    const disp_x = Math.min(Math.abs(vib_x_linear), 0.001);
+    const disp_y = Math.min(Math.abs(vib_y_linear), 0.001);
+    const c_xx = c_xx_linear * (1 + alpha_nonlinear * disp_x * disp_x);
+    const c_yy = c_yy_linear * (1 + alpha_nonlinear * disp_y * disp_y);
+
+    let vib_x = F0 / Math.sqrt(Math.pow(k_xx - m * omega * omega, 2) + Math.pow(c_xx * omega, 2));
+    let vib_y = F0 / Math.sqrt(Math.pow(k_yy - m * omega * omega, 2) + Math.pow(c_yy * omega, 2));
+
+    let total_disp = Math.sqrt(vib_x * vib_x + vib_y * vib_y);
+    if (whirl_instability) {
+        const growth = 1 + 2.5 * Math.max(0, r - 0.55) * Math.max(0, eps - 0.2) * 10;
+        total_disp *= Math.min(growth, 8.0);
+        const scale = total_disp / Math.max(1e-12, Math.sqrt(vib_x_linear * vib_x_linear + vib_y_linear * vib_y_linear));
+        vib_x *= scale;
+        vib_y *= scale;
+    }
+
+    const nonlinear_damping_factor = c_xx / Math.max(1e-12, c_xx_linear);
+    const k_pi = Math.PI * Math.pow(1 - eps * eps, -1.5);
+    const nl_fx = -mu * omega * Math.pow(bL, 3) * bR / (c * c) * eps * (2 + eps * eps) * k_pi / (4 * Math.pow(1 - eps * eps, 2));
+    const nl_fy = mu * omega * Math.pow(bL, 3) * bR / (c * c) * Math.PI * eps / (2 * Math.pow(1 - eps * eps, 2));
+
+    const target_twist = 800;
+    const twist_error = Math.abs(twist - target_twist) / target_twist;
+    const vib_impact = Math.min(1, total_disp / 0.005);
+    const uniformity = Math.max(0, 100 - twist_error * 100 - vib_impact * 50);
+    const strength = Math.max(0, 30 - vib_impact * 20);
+
+    return {
+        vibration: {
+            rpm, critical_rpm, unbalance_response,
+            oil_film_stiffness_x: k_xx, oil_film_stiffness_y: k_yy,
+            oil_film_damping_x: c_xx, oil_film_damping_y: c_yy,
+            whirl_ratio, eccentricity_ratio: eps,
+            vibration_x: vib_x, vibration_y: vib_y,
+            total_displacement: total_disp,
+            phase_angle: Math.atan2(vib_y, vib_x),
+            nonlinear_force_x: nl_fx,
+            nonlinear_force_y: nl_fy,
+            whirl_instability,
+            nonlinear_damping_factor,
+            oil_film_pressure_peak: pressure_peak,
+        },
+        yarn_quality: {
+            predicted_uniformity: uniformity,
+            predicted_strength: strength,
+            vibration_impact_factor: vib_impact,
+            wear_coefficient: 0.001 + vib_impact * 0.01,
+            material_boost: 1.0,
+            era_boost: 1.0,
+            balance_recovery: 0,
+        },
+        alerts: []
+    };
+}
+
+async function demoLoop() {
+    if (!isDemoPlaying) return;
+    const data = generateDemoData();
+    updateSensorDisplay(data);
+
+    try {
+        const simResp = await fetch(`${API_BASE}/api/simulate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                spindle_id: currentSpindle,
+                rpm: demoOverrideRpm !== null ? demoOverrideRpm : data.rpm,
+                vibration_amplitude: data.vibration_amplitude,
+                temperature: data.temperature,
+                twist_per_meter: data.twist_per_meter,
+                material_id: currentMaterial || undefined,
+                era_id: currentEra || undefined,
+                balance_correction_fraction: balanceCorrectionFraction || undefined,
+            }),
+        });
+        simulationData = await simResp.json();
+        updateSimulationDisplay(simulationData);
+        if (simulationData.alerts && simulationData.alerts.length > 0) {
+            addAlerts(simulationData.alerts);
+        }
+        if (typeof buildYarnOnSpindle === 'function') {
+            if (!yarnBuildParams) {
+                buildYarnOnSpindle();
+            }
+        }
+    } catch (e) {
+        const sim = computeLocalSimulation(demoOverrideRpm !== null ? demoOverrideRpm : data.rpm, data.vibration_amplitude, data.temperature, data.twist_per_meter);
+        updateSimulationDisplay(sim);
+    }
+}
+
+async function runSimulation() {
+    const data = generateDemoData();
+    try {
+        const resp = await fetch(`${API_BASE}/api/simulate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                spindle_id: currentSpindle,
+                rpm: data.rpm,
+                vibration_amplitude: data.vibration_amplitude,
+                temperature: data.temperature,
+                twist_per_meter: data.twist_per_meter,
+                material_id: currentMaterial,
+                era_id: currentEra || undefined,
+                balance_correction_fraction: balanceCorrectionFraction || undefined,
+            }),
+        });
+        const sim = await resp.json();
+        updateSensorDisplay(data);
+        updateSimulationDisplay(sim);
+        if (sim.alerts && sim.alerts.length) addAlerts(sim.alerts);
+    } catch (e) {
+        const sim = computeLocalSimulation(data.rpm, data.vibration_amplitude, data.temperature, data.twist_per_meter);
+        updateSensorDisplay(data);
+        updateSimulationDisplay(sim);
+        if (sim.alerts && sim.alerts.length) addAlerts(sim.alerts);
+    }
+}
+
+function renderMaterialInfo(m) {
+    const el = document.getElementById('material-info');
+    if (el) el.textContent = MATERIAL_INFO_MAP[m] || '';
+}
+
+function renderEraInfo(e) {
+    const el = document.getElementById('era-info');
+    if (el) el.textContent = ERA_INFO_MAP[e] || '基准物理模型：不附加时代缩放因子，使用默认材料参数作为理论参考。';
+}
+
+function initControlPanel() {
+    const rpmSlider = document.getElementById('rpm-slider');
+    const rpmDisplay = document.getElementById('rpm-display');
+    if (rpmSlider && rpmDisplay) {
+        rpmSlider.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            rpmDisplay.textContent = val;
+            demoOverrideRpm = val;
+            if (typeof setCurrentRpm === 'function') setCurrentRpm(val);
+            if (typeof updateForceFeedback === 'function') {
+                updateForceFeedback(val, null);
+            }
+        });
+    }
+
+    document.querySelectorAll('.rpm-preset').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const rpm = parseFloat(btn.dataset.rpm);
+            if (rpmSlider) {
+                rpmSlider.value = rpm;
+                rpmSlider.dispatchEvent(new Event('input'));
+            }
+        });
+    });
+
+    document.querySelectorAll('.material-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.material-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentMaterial = btn.dataset.material;
+            if (typeof setSpindleMaterial === 'function') {
+                setSpindleMaterial(currentMaterial);
+            }
+            renderMaterialInfo(currentMaterial);
+            if (typeof computeCriticalRpm === 'function' && typeof updateForceFeedback === 'function') {
+                const cr = computeCriticalRpm(currentMaterial, currentEra);
+                updateForceFeedback(demoOverrideRpm || 500, cr);
+            }
+        });
+    });
+
+    document.querySelectorAll('.era-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.era-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentEra = btn.dataset.era || null;
+            if (typeof setSpindleEra === 'function') {
+                setSpindleEra(currentEra);
+            }
+            renderEraInfo(currentEra);
+            if (typeof computeCriticalRpm === 'function' && typeof updateForceFeedback === 'function') {
+                const cr = computeCriticalRpm(currentMaterial, currentEra);
+                updateForceFeedback(demoOverrideRpm || 500, cr);
+            }
+        });
+    });
+
+    if (typeof computeCriticalRpm === 'function' && typeof updateForceFeedback === 'function') {
+        const initialCr = computeCriticalRpm(currentMaterial, currentEra);
+        updateForceFeedback(500, initialCr);
+    }
+
+    const balInitial = document.getElementById('balance-initial');
+    const balInitialVal = document.getElementById('balance-initial-val');
+    if (balInitial && balInitialVal) {
+        balInitial.addEventListener('input', (e) => {
+            balInitialVal.textContent = parseFloat(e.target.value).toFixed(1) + ' μm';
+        });
+    }
+    const balTarget = document.getElementById('balance-target');
+    const balTargetVal = document.getElementById('balance-target-val');
+    if (balTarget && balTargetVal) {
+        balTarget.addEventListener('input', (e) => {
+            balTargetVal.textContent = parseFloat(e.target.value).toFixed(2) + ' μm';
+        });
+    }
+
+    const balBtn = document.getElementById('balance-btn');
+    if (balBtn) {
+        balBtn.addEventListener('click', runBalanceCorrection);
+    }
+
+    const cmpMatBtn = document.getElementById('compare-materials');
+    if (cmpMatBtn) {
+        cmpMatBtn.addEventListener('click', runMaterialComparison);
+    }
+    const cmpEraBtn = document.getElementById('compare-eras');
+    if (cmpEraBtn) {
+        cmpEraBtn.addEventListener('click', runEraComparison);
+    }
+    const cmpClose = document.getElementById('compare-close');
+    if (cmpClose) {
+        cmpClose.addEventListener('click', () => {
+            document.getElementById('compare-title').textContent = '📈 对比分析面板';
+            cmpClose.style.display = 'none';
+            document.getElementById('compare-content').innerHTML = `
+                <div class="compare-placeholder">
+                    <div class="placeholder-icon">📊</div>
+                    <div class="placeholder-text">选择上面的对比按钮<br/>开始材料或跨时代对比分析</div>
+                </div>`;
+        });
+    }
+
+    renderMaterialInfo(currentMaterial);
+    renderEraInfo(currentEra);
+}
+
+async function runBalanceCorrection() {
+    const rpm = demoOverrideRpm !== null ? demoOverrideRpm : 3500;
+    const initUm = parseFloat(document.getElementById('balance-initial').value);
+    const tgtUm = parseFloat(document.getElementById('balance-target').value);
+
+    const btn = document.getElementById('balance-btn');
+    const btnText = btn.textContent;
+    btn.textContent = '⏳ 计算中...';
+    btn.disabled = true;
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/balance-correction`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                rpm,
+                material_id: currentMaterial,
+                era_id: currentEra || undefined,
+                initial_unbalance_m: initUm * 1e-6,
+                target_unbalance_m: tgtUm * 1e-6,
+            }),
+        });
+        const data = await resp.json();
+        renderBalanceResult(data);
+        balanceCorrectionFraction = Math.min(
+            (data.initial_unbalance_um - data.result.residual_unbalance_um) / data.initial_unbalance_um,
+            1.0
+        ) || 0;
+    } catch (e) {
+        const before = initUm;
+        const after = tgtUm * 1.5;
+        balanceCorrectionFraction = Math.min((before - after) / before, 1.0);
+    } finally {
+        btn.textContent = btnText;
+        btn.disabled = false;
+    }
+}
+
+function localMaterialCompare(rpm) {
+    const mats = [
+        { id: 'iron', name: '钢铁锭', E: 210e9, rho: 7850, damp: 1.0, qf: 1.0 },
+        { id: 'copper', name: '青铜锭', E: 120e9, rho: 8960, damp: 1.8, qf: 0.92 },
+        { id: 'wood', name: '铁木锭', E: 10e9, rho: 750, damp: 3.5, qf: 0.85 },
+    ];
+    return mats.map(m => {
+        const I = Math.PI * Math.pow(0.008, 4) / 64;
+        const k = 48 * m.E * I / Math.pow(0.3, 3);
+        const V = Math.PI * Math.pow(0.004, 2) * 0.3;
+        const mass = m.rho * V;
+        const omega_cr = Math.sqrt(k / mass);
+        const critical = omega_cr * 60 / (2 * Math.PI);
+        const omega = rpm * 2 * Math.PI / 60;
+        const ratio = omega / omega_cr;
+        const zeta = 0.02 * m.damp;
+        const unbal = 1e-4;
+        const disp = unbal * ratio * ratio / Math.sqrt(Math.pow(1 - ratio * ratio, 2) + Math.pow(2 * zeta * ratio, 2));
+        const disp_mm = disp * 1000;
+        const whirlRisk = ratio > 0.55 ? 1 : 0;
+        return {
+            material_id: m.id,
+            display_name: m.name,
+            critical_rpm: critical,
+            total_displacement_mm: disp_mm,
+            whirl_risk: whirlRisk,
+            quality_factor: m.qf,
+            relative_density: m.rho / 7850,
+            damping_ratio_factor: m.damp,
+            cost_index: m.id === 'iron' ? 3 : m.id === 'copper' ? 5 : 1,
+            youngs_modulus_pa: m.E,
+            estimated_uniformity: Math.max(0, 95 - disp_mm * 50) * m.qf,
+            estimated_strength: Math.max(0, 15 - disp_mm * 3) * m.qf,
+        };
+    });
+}
+
+function localEraCompare() {
+    return [
+        {
+            era_id: 'ancient_yuan',
+            display_name: '🏛️ 元代水转大纺车',
+            era_year: '公元1280-1368',
+            description: '《农书》记载32锭水转大纺车，水力驱动，每日纺纱百余斤。',
+            rpm: 500, typical_rpm: 500,
+            critical_rpm: 700, total_displacement_mm: 0.42,
+            whirl_instability: false, whirl_ratio: 0.42,
+            manufacturing_precision_factor: 5.0,
+            bearing_technology: '木轴套/青铜瓦 油润滑',
+            typical_yarn: '麻/丝混纺 20-40公支',
+            daily_output_kg: 100,
+            estimated_uniformity: 78.5,
+            estimated_strength: 11.8,
+        },
+        {
+            era_id: 'modern_high_speed',
+            display_name: '🏭 现代环锭细纱机',
+            era_year: '公元2000-至今',
+            description: '精密轴承钢锭，主动动平衡，锭速25000RPM，当代标准设备。',
+            rpm: 18000, typical_rpm: 18000,
+            critical_rpm: 25000, total_displacement_mm: 0.08,
+            whirl_instability: false, whirl_ratio: 0.36,
+            manufacturing_precision_factor: 0.05,
+            bearing_technology: 'SKF双列角接触陶瓷球轴承 油气润滑',
+            typical_yarn: '纯棉精梳 40-200公支',
+            daily_output_kg: 800,
+            estimated_uniformity: 96.2,
+            estimated_strength: 21.5,
+        },
+    ];
+}
+
+async function runMaterialComparison() {
+    const titleEl = document.getElementById('compare-title');
+    const closeBtn = document.getElementById('compare-close');
+    const contentEl = document.getElementById('compare-content');
+    titleEl.textContent = '🔬 锭子材料振动对比';
+    closeBtn.style.display = 'inline-block';
+    contentEl.innerHTML = '<div class="compare-placeholder"><div class="placeholder-icon">⏳</div><div class="placeholder-text">计算中...</div></div>';
+
+    const rpm = demoOverrideRpm || 500;
+    try {
+        const resp = await fetch(`${API_BASE}/api/material-comparison`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rpm, era_id: currentEra || undefined }),
+        });
+        const data = await resp.json();
+        renderMaterialComparisonTable(data);
+    } catch (e) {
+        const fallback = { rpm, comparisons: localMaterialCompare(rpm) };
+        renderMaterialComparisonTable(fallback);
+    }
+}
+
+function renderMaterialComparisonTable(data) {
+    const contentEl = document.getElementById('compare-content');
+    const rows = (data.comparisons || []).map(c => {
+        const dispClass = c.total_displacement_mm > 1.0 ? 'bad-value' : c.total_displacement_mm > 0.5 ? 'warn-value' : 'good-value';
+        const critClass = c.critical_rpm > 5000 ? 'good-value' : 'warn-value';
+        const whirlClass = c.whirl_risk > 0.5 ? 'bad-value' : 'good-value';
+        return `<tr>
+            <td class="material-col">${c.display_name}</td>
+            <td class="${critClass}">${c.critical_rpm.toFixed(0)}</td>
+            <td class="${dispClass}">${c.total_displacement_mm.toFixed(4)}</td>
+            <td class="${whirlClass}">${c.whirl_risk > 0.5 ? '⚠ 高风险' : '✓ 稳定'}</td>
+            <td>${c.damping_ratio_factor.toFixed(1)}×</td>
+            <td>${c.relative_density.toFixed(2)}</td>
+            <td class="good-value">${(c.estimated_uniformity || 0).toFixed(1)}%</td>
+            <td class="good-value">${(c.estimated_strength || 0).toFixed(2)}</td>
+            <td>${c.cost_index.toFixed(1)}×</td>
+        </tr>`;
+    }).join('');
+
+    contentEl.innerHTML = `
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+            RPM: <b style="color:var(--accent-blue)">${data.rpm}</b> &nbsp;·&nbsp;
+            时代: <b style="color:var(--accent-amber)">${data.era_id ? (data.era_id === 'ancient_yuan' ? '元代水转' : '现代环锭') : '基准模型'}</b>
+        </div>
+        <table class="compare-table">
+            <thead><tr>
+                <th>材料</th><th>临界转速(RPM)</th><th>位移(mm)</th><th>涡动风险</th>
+                <th>阻尼比</th><th>相对密度</th><th>均匀度</th><th>强度</th><th>成本</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:10px;line-height:1.6;">
+            💡 <b>铁木锭</b>：阻尼最高，减振好，但临界转速仅约600-800RPM，适合古代水转低转速工况；<br/>
+            <b>青铜锭</b>：密度大但刚度中等，临界转速约2500-3000RPM，战国-汉代的高端工艺；<br/>
+            <b>钢铁锭</b>：比刚度最高，临界转速可达3500+RPM，现代高速纺机标准。
+        </div>
+    `;
+}
+
+async function runEraComparison() {
+    const titleEl = document.getElementById('compare-title');
+    const closeBtn = document.getElementById('compare-close');
+    const contentEl = document.getElementById('compare-content');
+    titleEl.textContent = '🕰️ 跨时代纺锭振动对比';
+    closeBtn.style.display = 'inline-block';
+    contentEl.innerHTML = '<div class="compare-placeholder"><div class="placeholder-icon">⏳</div><div class="placeholder-text">计算中...</div></div>';
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/era-comparison`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ material_id: currentMaterial }),
+        });
+        const data = await resp.json();
+        renderEraComparisonTable(data);
+    } catch (e) {
+        const fallback = { comparisons: localEraCompare() };
+        renderEraComparisonTable(fallback);
+    }
+}
+
+function renderEraComparisonTable(data) {
+    const contentEl = document.getElementById('compare-content');
+    const rows = (data.comparisons || []).map(c => {
+        const dispClass = c.total_displacement_mm > 0.5 ? 'bad-value' : c.total_displacement_mm > 0.2 ? 'warn-value' : 'good-value';
+        const whirlClass = c.whirl_instability ? 'bad-value' : 'good-value';
+        return `<tr>
+            <td class="material-col">${c.display_name} <span style="color:var(--text-secondary);font-size:11px;">(${c.era_year})</span></td>
+            <td>${c.typical_rpm}</td>
+            <td class="${c.critical_rpm > c.typical_rpm ? 'good-value' : 'warn-value'}">${c.critical_rpm.toFixed(0)}</td>
+            <td class="${dispClass}">${c.total_displacement_mm.toFixed(4)}</td>
+            <td class="${whirlClass}">${c.whirl_instability ? '⚠ 失稳' : '✓ 稳定'}</td>
+            <td class="good-value">${c.estimated_uniformity.toFixed(1)}%</td>
+            <td class="good-value">${c.estimated_strength.toFixed(1)}</td>
+            <td>${c.daily_output_kg}</td>
+        </tr>`;
+    }).join('');
+
+    const eras = data.comparisons || [];
+    let details = '';
+    if (eras.length === 2) {
+        const a = eras[0], b = eras[1];
+        details = `
+            <div style="margin-top:12px;padding:12px;background:var(--bg-secondary);border-radius:8px;font-size:12px;line-height:1.8;">
+                <div style="color:var(--accent-purple);font-weight:700;margin-bottom:8px;">📊 跨700年技术跃迁</div>
+                <div>锭速提升: <b style="color:var(--accent-green)">${((b.typical_rpm / a.typical_rpm - 1) * 100).toFixed(0)}%</b> (${a.typical_rpm} → ${b.typical_rpm} RPM)</div>
+                <div>振动降低: <b style="color:var(--accent-cyan)">${((1 - b.total_displacement_mm / a.total_displacement_mm) * 100).toFixed(1)}%</b></div>
+                <div>日产量提升: <b style="color:var(--accent-amber)">${((b.daily_output_kg / a.daily_output_kg - 1) * 100).toFixed(0)}%</b> (${a.daily_output_kg} → ${b.daily_output_kg} kg)</div>
+                <div>轴承演进: <span style="color:var(--text-secondary)">${a.bearing_technology} → ${b.bearing_technology}</span></div>
+            </div>
+        `;
+    }
+
+    const erasDetail = eras.map(c => `
+        <div style="margin-top:10px;padding:10px;background:var(--bg-secondary);border-radius:8px;border-left:3px solid var(--accent-amber);font-size:11px;line-height:1.6;color:var(--text-secondary);">
+            <div style="color:var(--text-primary);font-weight:700;font-size:12px;margin-bottom:4px;">${c.display_name}</div>
+            <div>${c.description}</div>
+            <div style="margin-top:4px;">典型纱支: <span style="color:var(--accent-cyan)">${c.typical_yarn}</span></div>
+        </div>
+    `).join('');
+
+    contentEl.innerHTML = `
+        <table class="compare-table">
+            <thead><tr>
+                <th>时代</th><th>典型RPM</th><th>临界转速</th><th>位移(mm)</th>
+                <th>涡动</th><th>均匀度</th><th>强度</th><th>日产量(kg)</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+        ${erasDetail}
+        ${details}
+    `;
+}
+
+function renderBalanceResult(data) {
+    const contentEl = document.getElementById('compare-content');
+    const titleEl = document.getElementById('compare-title');
+    const closeBtn = document.getElementById('compare-close');
+    titleEl.textContent = '⚖️ 动平衡校正结果';
+    closeBtn.style.display = 'inline-block';
+
+    const r = data.result;
+    contentEl.innerHTML = `
+        <div class="balance-results">
+            <div class="result-grid">
+                <div class="result-card">
+                    <div class="result-label">校正配重</div>
+                    <div class="result-value">${r.correction_weight_grams.toFixed(2)} g</div>
+                    <div class="result-hint">最大允许 ${50} g</div>
+                </div>
+                <div class="result-card">
+                    <div class="result-label">安装角度</div>
+                    <div class="result-value">${r.correction_angle_deg.toFixed(0)}°</div>
+                    <div class="result-hint">相位反向 + 180°</div>
+                </div>
+                <div class="result-card">
+                    <div class="result-label">残余不平衡</div>
+                    <div class="result-value">${(r.residual_unbalance_m * 1e6).toFixed(2)} μm</div>
+                    <div class="result-hint">目标 ${(r.residual_unbalance_m * 1e6).toFixed(2)} μm</div>
+                </div>
+                <div class="result-card">
+                    <div class="result-label">振动降低</div>
+                    <div class="result-value good-value">${r.vibration_reduction_pct.toFixed(1)}%</div>
+                    <div class="result-hint">${r.vibration_before_mm.toFixed(4)} → ${r.vibration_after_mm.toFixed(4)} mm</div>
+                </div>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-label">校正进度</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: ${Math.min(100, r.vibration_reduction_pct)}%"></div>
+                </div>
+                <div class="progress-steps">${r.steps_taken} 步完成（影响系数法）</div>
+            </div>
+        </div>
+    `;
+}
+
+function switchTab(tabName) {
+    currentTab = tabName;
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.tab-panel').forEach(panel => {
+        panel.style.display = panel.dataset.panel === tabName ? 'block' : 'none';
+    });
+
+    const materials = [
+        { id: 'wood', name: '铁木锭' },
+        { id: 'copper', name: '青铜锭' },
+        { id: 'iron', name: '钢铁锭' }
+    ];
+    const eras = [
+        { id: 'ancient_yuan', name: '元代水转' },
+        { id: 'modern_high_speed', name: '现代环锭' }
+    ];
+    const baseRotor = createBaseRotorConfig();
+
+    if (tabName === 'material') {
+        const container = document.querySelector('[data-panel="material"]');
+        if (container && typeof renderMaterialComparatorPanel === 'function') {
+            renderMaterialComparatorPanel(container, materials, eras);
+        }
+    } else if (tabName === 'era') {
+        const container = document.querySelector('[data-panel="era"]');
+        if (container && typeof renderEraComparatorPanel === 'function') {
+            renderEraComparatorPanel(container, materials, eras);
+        }
+    } else if (tabName === 'balance') {
+        const container = document.querySelector('[data-panel="balance"]');
+        if (container && typeof renderBalanceOptimizerPanel === 'function') {
+            renderBalanceOptimizerPanel(container, materials, eras);
+        }
+    } else if (tabName === 'vr') {
+        const container = document.querySelector('[data-panel="vr"]');
+        if (container && typeof renderVrSpindlePanel === 'function') {
+            renderVrSpindlePanel(container, materials, eras, baseRotor);
+        }
+    }
+}
+
+function initTabs() {
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+    switchTab('realtime');
+}
+
+function getCurrentLodName() {
+    return ['低', '中', '高'][currentLodLevel] || '中';
+}
+
+function getAverageFps() {
+    if (fpsHistory.length === 0) return '--';
+    const avg = fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length;
+    return Math.round(avg);
+}
+
+function animateThree() {
+    if (!threeScene || !threeRenderer) return;
+    const now = performance.now();
+    const delta = (now - lastFrameTime) / 1000;
+    lastFrameTime = now;
+    const fps = 1 / Math.max(delta, 0.001);
+    fpsHistory.push(fps);
+    if (fpsHistory.length > 30) fpsHistory.shift();
+
+    if (typeof animate === 'function') {
+        animate();
+    }
+    animationFrameId = requestAnimationFrame(animateThree);
+}
+
+function initThreeDemo() {
+    if (typeof initThreeScene === 'function') {
+        initThreeScene();
+    }
+    if (typeof buildSpindleModel === 'function') {
+        buildSpindleModel(currentMaterial, currentEra);
+    }
+    initVibrationCanvas();
+    animateThree();
+}
+
+function startDemoMode() {
+    isDemoPlaying = true;
+    demoLoop();
+    setInterval(demoLoop, 2000);
+    setInterval(() => {
+        const lodEl = document.getElementById('val-lod');
+        if (lodEl && typeof getCurrentLodName === 'function' && typeof getAverageFps === 'function') {
+            lodEl.textContent = getCurrentLodName() + ' (' + getAverageFps() + ' FPS)';
+        }
+    }, 500);
+}
+
+async function initApp() {
+    const overlay = document.querySelector('.three-overlay');
+    if (overlay) {
+        const wearBadge = document.createElement('div');
+        wearBadge.className = 'overlay-badge';
+        wearBadge.innerHTML = '<span class="label">磨损系数</span><span class="value" id="val-wear" style="color:var(--accent-red)">--%</span>';
+        overlay.appendChild(wearBadge);
+
+        const lodBadge = document.createElement('div');
+        lodBadge.className = 'overlay-badge';
+        lodBadge.innerHTML = '<span class="label">渲染</span><span class="value" id="val-lod" style="color:var(--accent-green)">--</span>';
+        overlay.appendChild(lodBadge);
+    }
+
+    initThreeDemo();
+    initControlPanel();
+    initTabs();
+    connectAlertWebSocket();
+    startDemoMode();
+}
+
+window.addEventListener('load', initApp);
+
+document.getElementById('spindle-select').addEventListener('change', (e) => {
+    currentSpindle = e.target.value;
+    vibrationHistoryX = [];
+    vibrationHistoryY = [];
+});
+
+document.getElementById('simulate-btn').addEventListener('click', runSimulation);

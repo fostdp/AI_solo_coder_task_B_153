@@ -1,0 +1,80 @@
+﻿cargo : warning: method `quality_impact` is never used
+所在位置 行:1 字符: 88
++ ... coder_task_B_153\backend; cargo test vibration_simulator 2>&1 | Out-F ...
++                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: method...` is never used 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+   --> src\config.rs:220:12
+    |
+203 | impl MaterialProfile {
+    | -------------------- method in this implementation
+...
+220 |     pub fn quality_impact(&self) -> f64 {
+    |            ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `render_comparison_json` is never used
+  --> src\era_comparator.rs:78:8
+   |
+78 | pub fn render_comparison_json(results: Vec<EraComparisonResult>) -> Value 
+{
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `render_comparison_json` is never used
+  --> src\material_comparator.rs:81:8
+   |
+81 | pub fn render_comparison_json(
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MaterialComparisonResult` is never constructed
+  --> src\quality_predictor.rs:27:12
+   |
+27 | pub struct MaterialComparisonResult {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `EraComparisonResult` is never constructed
+  --> src\quality_predictor.rs:41:12
+   |
+41 | pub struct EraComparisonResult {
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: function `balance_cfg` is never used
+   --> src\vibration_simulator.rs:542:8
+    |
+542 |     fn balance_cfg() -> BalanceCorrectionConfig {
+    |        ^^^^^^^^^^^
+
+warning: `spindle-backend` (bin "spindle-backend" test) generated 6 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running unittests src\main.rs (target\debug\deps\spindle_backend-fa0c831e5
+889c546.exe)
+
+running 22 tests
+test vibration_simulator::tests::critical_speed_material_tests::test_critical_speed_independent_of_input_rpm ... ok
+test vibration_simulator::tests::critical_speed_material_tests::test_copper_critical_speed_between_wood_and_iron ... ok
+test vibration_simulator::tests::critical_speed_material_tests::test_iron_critical_speed_around_3700rpm ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_oil_film_stiffness_positive ... ok
+test vibration_simulator::tests::critical_speed_material_tests::test_very_high_rpm_still_computes ... ok
+test vibration_simulator::tests::critical_speed_material_tests::test_wood_critical_speed_much_lower_than_iron ... ok
+test vibration_simulator::tests::critical_speed_material_tests::test_zero_rpm_gives_positive_critical_speed ... ok
+test vibration_simulator::tests::cross_era_tests::test_ancient_wood_vibration_lower_at_typical_rpm ... ok
+test vibration_simulator::tests::cross_era_tests::test_era_and_material_combined_produces_finite_results ... ok
+test vibration_simulator::tests::cross_era_tests::test_modern_era_has_higher_critical_speed ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_amplitude_monotonic_increase_near_resonance ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_analyze_with_unbalance_scales_eccentricity ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_eccentricity_ratio_bounded ... ok
+test vibration_simulator::tests::cross_era_tests::test_modern_era_low_vibration_at_high_rpm ... ok
+test vibration_simulator::tests::critical_speed_material_tests::test_negative_rpm_is_treated_as_zero_magnitude ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_nonlinear_damping_factor_greater_than_one ... ok
+test vibration_simulator::tests::cross_era_tests::test_ancient_within_rpm_range_stable ... ok
+test vibration_simulator::tests::cross_era_tests::test_modern_precision_reduces_eccentricity ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_rpm_sweep_100_to_25000_all_finite ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_phase_angle_in_pi_range ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_whirl_ratio_in_valid_range ... ok
+test vibration_simulator::tests::virtual_experience_unit_tests::test_rpm_100_low_vibration ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 66 filtered out; finished in 0.00s
+

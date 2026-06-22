@@ -1,0 +1,70 @@
+﻿cargo : warning: method `quality_impact` is never used
+所在位置 行:1 字符: 88
++ ... 153\backend; cargo test balance_optimizer -- --nocapture 2>&1 | Out-F ...
++                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: method...` is never used 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+   --> src\config.rs:220:12
+    |
+203 | impl MaterialProfile {
+    | -------------------- method in this implementation
+...
+220 |     pub fn quality_impact(&self) -> f64 {
+    |            ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `render_comparison_json` is never used
+  --> src\era_comparator.rs:78:8
+   |
+78 | pub fn render_comparison_json(results: Vec<EraComparisonResult>) -> Value 
+{
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `render_comparison_json` is never used
+  --> src\material_comparator.rs:81:8
+   |
+81 | pub fn render_comparison_json(
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MaterialComparisonResult` is never constructed
+  --> src\quality_predictor.rs:27:12
+   |
+27 | pub struct MaterialComparisonResult {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `EraComparisonResult` is never constructed
+  --> src\quality_predictor.rs:41:12
+   |
+41 | pub struct EraComparisonResult {
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: function `balance_cfg` is never used
+   --> src\vibration_simulator.rs:542:8
+    |
+542 |     fn balance_cfg() -> BalanceCorrectionConfig {
+    |        ^^^^^^^^^^^
+
+warning: `spindle-backend` (bin "spindle-backend" test) generated 6 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running unittests src\main.rs (target\debug\deps\spindle_backend-fa0c831e5
+889c546.exe)
+
+running 12 tests
+test balance_optimizer::tests::test_balance_boundary_same_initial_equals_target ... ok
+test balance_optimizer::tests::test_balance_boundary_very_strict_target ... ok
+test balance_optimizer::tests::test_balance_boundary_zero_rpm ... ok
+test balance_optimizer::tests::test_balance_correction_converges_in_steps ... ok
+test balance_optimizer::tests::test_balance_correction_reduces_residual_unbalance ... ok
+test balance_optimizer::tests::test_balance_with_era_context ... ok
+test balance_optimizer::tests::test_vibration_reduction_at_least_40_percent ... ok
+test balance_optimizer::tests::test_balance_correction_reduces_vibration ... ok
+test balance_optimizer::tests::test_balance_correction_improves_critical_speed ... ok
+test balance_optimizer::tests::test_balance_with_material_context ... ok
+test balance_optimizer::tests::test_balance_correction_angle_in_range ... ok
+test balance_optimizer::tests::test_balance_correction_weight_positive ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.00s
+

@@ -40,6 +40,12 @@ pub struct ClickHouseConfig {
 pub struct ApiConfig {
     pub bind_address: String,
     pub bind_port: u16,
+    #[serde(default = "default_pool_size")]
+    pub vibration_pool_size: Option<u32>,
+}
+
+fn default_pool_size() -> Option<u32> {
+    Some(4)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,10 +231,15 @@ impl MaterialProfile {
 impl EraProfile {
     pub fn apply_to_rotor(&self, material_profile: &MaterialProfile, base: &RotorDynamicsConfig) -> RotorDynamicsConfig {
         let mat_rotor = material_profile.apply_to_rotor(base);
+        let new_shaft_length = mat_rotor.shaft_length_m * self.shaft_length_factor;
+        let new_shaft_diameter = mat_rotor.shaft_diameter_m * self.shaft_diameter_factor;
+        let volume = std::f64::consts::PI * (new_shaft_diameter / 2.0).powi(2) * new_shaft_length;
+        let new_mass = material_profile.density_kg_m3 * volume;
         RotorDynamicsConfig {
-            shaft_length_m: mat_rotor.shaft_length_m * self.shaft_length_factor,
-            shaft_diameter_m: mat_rotor.shaft_diameter_m * self.shaft_diameter_factor,
+            shaft_length_m: new_shaft_length,
+            shaft_diameter_m: new_shaft_diameter,
             unbalance_eccentricity_m: mat_rotor.unbalance_eccentricity_m * self.manufacturing_precision_factor,
+            mass_kg: new_mass,
             ..mat_rotor
         }
     }

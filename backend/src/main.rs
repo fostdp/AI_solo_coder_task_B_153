@@ -1,11 +1,16 @@
 mod alarm_mqtt;
 mod api;
+mod balance_optimizer;
 mod ch_writer;
 mod config;
+mod era_comparator;
+mod material_comparator;
 mod metrics;
 mod mqtt_receiver;
 mod quality_predictor;
+mod rotor_thread_pool;
 mod vibration_simulator;
+mod vr_spindle;
 
 use alarm_mqtt::AlertRecord;
 use ch_writer::{ClickHouseWriter, WriteCommand};
@@ -13,6 +18,7 @@ use config::AppConfig;
 use metrics::Metrics;
 use mqtt_receiver::ValidatedSensorData;
 use quality_predictor::QualityPredictor;
+use rotor_thread_pool::RotorThreadPool;
 use vibration_simulator::VibrationSimulator;
 
 use std::net::SocketAddr;
@@ -65,6 +71,9 @@ async fn main() -> anyhow::Result<()> {
         cfg.oil_film_bearing.clone(),
     );
 
+    let rotor_pool = Arc::new(RotorThreadPool::from_config(&cfg, Arc::clone(&metrics)));
+    tracing::info!("Rotor dynamics thread pool initialized");
+
     let quality_predictor = Arc::new(QualityPredictor::new(
         cfg.regression_model.clone(),
         Arc::clone(&metrics),
@@ -96,10 +105,10 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let sim_clone = vibration_sim.clone();
+    let pool_clone = Arc::clone(&rotor_pool);
     let metrics_vib = Arc::clone(&metrics);
     tokio::spawn(async move {
-        vibration_simulator::run_vibration_service(sim_clone, vib_rx, vib_out_tx, metrics_vib).await;
+        rotor_thread_pool::run_vibration_service_via_pool(pool_clone, vib_rx, vib_out_tx, metrics_vib).await;
     });
 
     let predictor_clone = Arc::clone(&quality_predictor);
@@ -140,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
         ch_writer: Arc::clone(&ch_writer),
         quality_predictor: Arc::clone(&quality_predictor),
         vibration_simulator: vibration_sim.clone(),
+        rotor_pool: Arc::clone(&rotor_pool),
         config: Arc::clone(&cfg),
         metrics: Arc::clone(&metrics),
     });

@@ -1,12 +1,17 @@
 use crate::alarm_mqtt::{self, AlertRecord};
+use crate::balance_optimizer::{self as balance_optimizer};
 use crate::ch_writer::ClickHouseWriter;
 use crate::config::AppConfig;
+use crate::era_comparator::{self as era_comparator};
+use crate::material_comparator::{self as material_comparator};
 use crate::metrics::Metrics;
 use crate::quality_predictor::QualityPredictor;
+use crate::rotor_thread_pool::RotorThreadPool;
 use crate::vibration_simulator::VibrationSimulator;
+use crate::vr_spindle::{self as vr_spindle};
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Query, State},
     http::{Request, StatusCode, Uri},
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -23,6 +28,7 @@ pub struct AppState {
     pub ch_writer: Arc<ClickHouseWriter>,
     pub quality_predictor: Arc<QualityPredictor>,
     pub vibration_simulator: VibrationSimulator,
+    pub rotor_pool: Arc<RotorThreadPool>,
     pub config: Arc<AppConfig>,
     pub metrics: Arc<Metrics>,
 }
@@ -94,6 +100,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/material-comparison", post(material_comparison))
         .route("/api/era-comparison", post(era_comparison))
         .route("/api/balance-correction", post(balance_correction))
+        .route("/api/vr/force-feedback", get(vr_force_feedback))
+        .route("/api/vr/critical-rpm", get(vr_critical_rpm))
+        .route("/api/vr/rpm-sweep", get(vr_rpm_sweep))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -432,127 +441,43 @@ async fn material_comparison(
     State(state): State<Arc<AppState>>,
     Json(req): Json<MaterialComparisonRequest>,
 ) -> Json<Value> {
-    let sim = &state.vibration_simulator;
-    let cfg = &state.config;
-    let era = req.era_id.as_ref().and_then(|id| match id.as_str() {
-        "ancient_yuan" => Some(&cfg.era_profiles.ancient_yuan),
-        "modern_high_speed" => Some(&cfg.era_profiles.modern_high_speed),
-        _ => None,
-    });
+    let rpm = req.rpm;
+    let era_id = req.era_id;
+    let material_ids = req.material_ids;
 
-    let mut results: Vec<Value> = Vec::new();
-    let mats = [
-        ("wood", &cfg.material_profiles.wood),
-        ("copper", &cfg.material_profiles.copper),
-        ("iron", &cfg.material_profiles.iron),
-    ];
-
-    for (id, mat) in &mats {
-        if !req.material_ids.iter().any(|m| m == id) {
-            continue;
-        }
-        let vib = if let Some(e) = era {
-            sim.analyze_with_material_and_era(req.rpm, mat, e)
-        } else {
-            let r = mat.apply_to_rotor(&sim.rotor);
-            let s2 = VibrationSimulator::new(r, sim.bearing.clone());
-            s2.analyze(req.rpm)
-        };
-        let disp_mm = vib.total_displacement * 1000.0;
-        let cost_index = match *id {
-            "wood" => 1.0,
-            "copper" => 5.0,
-            "iron" => 3.0,
-            _ => 1.0,
-        };
-        results.push(json!({
-            "material_id": mat.material_id,
-            "display_name": mat.display_name,
-            "critical_rpm": vib.critical_rpm,
-            "total_displacement_mm": disp_mm,
-            "whirl_risk": if vib.whirl_instability { 1.0 } else { 0.0 },
-            "eccentricity_ratio": vib.eccentricity_ratio,
-            "quality_factor": mat.quality_factor,
-            "relative_density": mat.density_kg_m3 / cfg.material_profiles.iron.density_kg_m3,
-            "damping_ratio_factor": mat.damping_ratio_factor,
-            "cost_index": cost_index,
-            "youngs_modulus_pa": mat.youngs_modulus_pa,
-            "estimated_uniformity": (95.0 - disp_mm * 50.0).max(0.0) * mat.quality_factor,
-            "estimated_strength": (15.0 - disp_mm * 3.0).max(0.0) * mat.quality_factor,
-        }));
-    }
-
-    Json(json!({
-        "rpm": req.rpm,
-        "era_id": req.era_id,
-        "comparisons": results,
-    }))
+    let results = material_comparator::compare_materials(
+        &state.vibration_simulator,
+        &state.config.material_profiles,
+        &state.config.era_profiles,
+        rpm,
+        era_id.as_deref(),
+        &material_ids,
+    );
+    Json(material_comparator::render_comparison_json(rpm, era_id.as_deref(), results))
 }
 
 async fn era_comparison(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EraComparisonRequest>,
 ) -> Json<Value> {
-    let sim = &state.vibration_simulator;
-    let cfg = &state.config;
+    let material_id = req.material_id;
+    let rpm = req.rpm;
 
-    let eras: Vec<(&str, &crate::config::EraProfile)> = vec![
-        ("ancient_yuan", &cfg.era_profiles.ancient_yuan),
-        ("modern_high_speed", &cfg.era_profiles.modern_high_speed),
-    ];
-
-    let mut results: Vec<Value> = Vec::new();
-    for (era_id, era) in &eras {
-        let mat_id = req
-            .material_id
-            .clone()
-            .unwrap_or_else(|| era.default_material.clone());
-        let mat = match mat_id.as_str() {
-            "wood" => &cfg.material_profiles.wood,
-            "copper" => &cfg.material_profiles.copper,
-            _ => &cfg.material_profiles.iron,
-        };
-        let rpm = req.rpm.unwrap_or(era.typical_rpm);
-        let vib = sim.analyze_with_material_and_era(rpm, mat, era);
-        let disp_mm = vib.total_displacement * 1000.0;
-
-        let output_kg_per_hour = match era_id {
-            &"ancient_yuan" => rpm / 500.0 * 2.5,
-            &"modern_high_speed" => rpm / 18000.0 * 35.0,
-            _ => 0.0,
-        };
-
-        results.push(json!({
-            "era_id": era.era_id,
-            "display_name": era.display_name,
-            "era_year": era.era_year,
-            "description": era.description,
-            "rpm": rpm,
-            "typical_rpm": era.typical_rpm,
-            "critical_rpm": vib.critical_rpm,
-            "total_displacement_mm": disp_mm,
-            "whirl_instability": vib.whirl_instability,
-            "whirl_ratio": vib.whirl_ratio,
-            "material_id": mat.material_id,
-            "manufacturing_precision_factor": era.manufacturing_precision_factor,
-            "bearing_technology": era.bearing_technology,
-            "typical_yarn": era.typical_yarn,
-            "daily_output_kg": (output_kg_per_hour * 24.0).round(),
-            "estimated_uniformity": (95.0 - disp_mm * 30.0).max(0.0) * mat.quality_factor,
-            "estimated_strength": (15.0 - disp_mm * 2.0).max(0.0) * mat.quality_factor,
-        }));
-    }
-
-    Json(json!({
-        "comparisons": results,
-    }))
+    let results = era_comparator::compare_eras(
+        &state.vibration_simulator,
+        &state.config.material_profiles,
+        &state.config.era_profiles,
+        material_id.as_deref(),
+        rpm,
+    );
+    Json(era_comparator::render_comparison_json(results))
 }
 
 async fn balance_correction(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BalanceCorrectionRequest>,
 ) -> Json<Value> {
-    let sim = &state.vibration_simulator;
+    let initial_rpm = req.rpm;
     let cfg = &state.config;
 
     let mut bal_cfg = cfg.balance_correction.clone();
@@ -578,25 +503,47 @@ async fn balance_correction(
         _ => None,
     });
 
-    let result = sim.compute_balance_correction(req.rpm, &bal_cfg, material, era);
+    let result = balance_optimizer::compute_balance_correction(
+        &state.vibration_simulator,
+        initial_rpm,
+        &bal_cfg,
+        material,
+        era,
+    );
+    Json(serde_json::json!({ "result": result }))
+}
 
-    Json(json!({
-        "rpm": req.rpm,
-        "material_id": req.material_id,
-        "era_id": req.era_id,
-        "initial_unbalance_um": bal_cfg.initial_residual_unbalance_m * 1_000_000.0,
-        "target_unbalance_um": bal_cfg.target_residual_unbalance_m * 1_000_000.0,
-        "result": {
-            "residual_unbalance_um": result.residual_unbalance_m * 1_000_000.0,
-            "correction_weight_grams": result.correction_weight_grams,
-            "correction_angle_deg": result.correction_angle_deg,
-            "vibration_before_mm": result.vibration_before_mm,
-            "vibration_after_mm": result.vibration_after_mm,
-            "vibration_reduction_pct": result.vibration_reduction_pct,
-            "steps_taken": result.steps_taken,
-            "success": result.success,
-            "critical_rpm_improvement_pct": result.critical_rpm_improvement_pct,
-        },
-        "calibration_weights_available": bal_cfg.calibration_weights_grams,
-    }))
+async fn vr_force_feedback(
+    State(_state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<Value> {
+    let rpm = params.get("rpm").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+    let critical = params.get("critical_rpm").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+    let fb = vr_spindle::compute_force_feedback(rpm, critical);
+    Json(serde_json::json!(fb))
+}
+
+async fn vr_critical_rpm(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<Value> {
+    let material_id = params.get("material_id").map(|s| s.as_str()).unwrap_or("iron");
+    let era_id = params.get("era_id").map(|s| s.as_str());
+    let cr = vr_spindle::compute_critical_rpm(
+        material_id, era_id,
+        &state.config.material_profiles, &state.config.era_profiles,
+        &state.config.rotor_dynamics,
+    );
+    Json(serde_json::json!({ "critical_rpm": cr }))
+}
+
+async fn vr_rpm_sweep(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<Value> {
+    let empty = String::new();
+    let raw = params.get("rpms").unwrap_or(&empty);
+    let rpms: Vec<f64> = raw.split(',').filter_map(|s| s.parse::<f64>().ok()).collect();
+    let sweep = vr_spindle::validate_rpm_sweep(&state.vibration_simulator, &rpms);
+    Json(serde_json::json!({ "points": sweep }))
 }

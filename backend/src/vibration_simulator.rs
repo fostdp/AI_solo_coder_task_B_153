@@ -1,3 +1,4 @@
+use crate::balance_optimizer::{self, BalanceCorrectionResult};
 use crate::config::{BalanceCorrectionConfig, EraProfile, MaterialProfile, OilFilmBearingConfig, RotorDynamicsConfig};
 use crate::metrics::Metrics;
 use serde::Serialize;
@@ -23,19 +24,6 @@ pub struct VibrationResult {
     pub whirl_instability: bool,
     pub nonlinear_damping_factor: f64,
     pub oil_film_pressure_peak: f64,
-}
-
-#[derive(Serialize, Clone, Debug)]
-pub struct BalanceCorrectionResult {
-    pub residual_unbalance_m: f64,
-    pub correction_weight_grams: f64,
-    pub correction_angle_deg: f64,
-    pub vibration_before_mm: f64,
-    pub vibration_after_mm: f64,
-    pub vibration_reduction_pct: f64,
-    pub steps_taken: u32,
-    pub success: bool,
-    pub critical_rpm_improvement_pct: f64,
 }
 
 #[derive(Clone)]
@@ -408,80 +396,11 @@ impl VibrationSimulator {
         material: Option<&MaterialProfile>,
         era: Option<&EraProfile>,
     ) -> BalanceCorrectionResult {
-        let test_rotor: RotorDynamicsConfig = if let (Some(m), Some(e)) = (material, era) {
-            e.apply_to_rotor(m, &self.rotor)
-        } else if let Some(m) = material {
-            m.apply_to_rotor(&self.rotor)
-        } else {
-            self.rotor.clone()
-        };
-
-        let correction_radius = test_rotor.shaft_diameter_m * 0.4 + 0.001;
-
-        let sim_initial = VibrationSimulator::new(test_rotor.clone(), self.bearing.clone());
-        let vib_initial = sim_initial.analyze_with_unbalance(initial_rpm, correction_cfg.initial_residual_unbalance_m);
-        let vibration_before = vib_initial.total_displacement * 1000.0;
-
-        let initial_unbalance = correction_cfg.initial_residual_unbalance_m;
-        let target_unbalance = correction_cfg.target_residual_unbalance_m;
-
-        let delta_unbalance = (initial_unbalance - target_unbalance).max(0.0);
-        let correction_mass_kg = if correction_radius > 1e-9 {
-            delta_unbalance / correction_radius
-        } else {
-            0.0
-        };
-        let mut correction_grams = correction_mass_kg * 1000.0;
-
-        correction_grams = correction_grams
-            .min(correction_cfg.max_correction_weight_grams)
-            .max(0.0);
-
-        let actual_delta_unbalance = correction_grams / 1000.0 * correction_radius;
-        let residual_unbalance = (initial_unbalance - actual_delta_unbalance).max(target_unbalance * 0.5);
-
-        let phase_deg = vib_initial.phase_angle * 180.0 / std::f64::consts::PI;
-        let correction_angle = (phase_deg + 180.0) % 360.0;
-        let final_angle = if correction_angle < 0.0 { correction_angle + 360.0 } else { correction_angle };
-
-        let sim_after = VibrationSimulator::new(test_rotor.clone(), self.bearing.clone());
-        let vib_after = sim_after.analyze_with_unbalance(initial_rpm, residual_unbalance);
-        let vibration_after = vib_after.total_displacement * 1000.0;
-
-        let critical_rpm_before = vib_initial.critical_rpm;
-        let critical_rpm_after = vib_after.critical_rpm;
-
-        let reduction_pct = if vibration_before > 1e-12 {
-            ((vibration_before - vibration_after) / vibration_before * 100.0).max(0.0)
-        } else {
-            0.0
-        };
-        let critical_improvement_pct = if critical_rpm_before > 1e-12 {
-            ((critical_rpm_after - critical_rpm_before) / critical_rpm_before * 100.0).max(0.0)
-        } else {
-            0.0
-        };
-
-        BalanceCorrectionResult {
-            residual_unbalance_m: residual_unbalance,
-            correction_weight_grams: correction_grams,
-            correction_angle_deg: final_angle,
-            vibration_before_mm: vibration_before,
-            vibration_after_mm: vibration_after,
-            vibration_reduction_pct: reduction_pct,
-            steps_taken: 1,
-            success: residual_unbalance <= target_unbalance * 1.1 || correction_grams < correction_cfg.max_correction_weight_grams,
-            critical_rpm_improvement_pct: critical_improvement_pct,
-        }
+        balance_optimizer::compute_balance_correction(self, initial_rpm, correction_cfg, material, era)
     }
 
-    fn analyze_with_unbalance(&self, rpm: f64, override_unbalance: f64) -> VibrationResult {
-        let r = RotorDynamicsConfig {
-            unbalance_eccentricity_m: override_unbalance,
-            ..self.rotor.clone()
-        };
-        let sim = VibrationSimulator::new(r, self.bearing.clone());
-        sim.analyze(rpm)
+    pub fn analyze_with_unbalance(&self, rpm: f64, override_unbalance: f64) -> VibrationResult {
+        balance_optimizer::analyze_with_unbalance(self, rpm, override_unbalance)
     }
 }
 
@@ -859,161 +778,6 @@ mod tests {
             assert!(
                 r_ancient.unbalance_eccentricity_m > r_modern.unbalance_eccentricity_m,
                 "现代制造精度高，不平衡偏心应更小"
-            );
-        }
-    }
-
-    mod balance_correction_tests {
-        use super::*;
-
-        #[test]
-        fn test_balance_correction_reduces_vibration() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let rpm = 1000.0;
-            let result = sim.compute_balance_correction(rpm, &cfg, None, None);
-            assert!(
-                result.vibration_after_mm < result.vibration_before_mm,
-                "平衡后振动应小于平衡前 (before={}, after={})",
-                result.vibration_before_mm, result.vibration_after_mm
-            );
-            assert!(
-                result.vibration_reduction_pct > 0.0,
-                "振动降低百分比应为正"
-            );
-        }
-
-        #[test]
-        fn test_balance_correction_reduces_residual_unbalance() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let result = sim.compute_balance_correction(1000.0, &cfg, None, None);
-            assert!(
-                result.residual_unbalance_m < cfg.initial_residual_unbalance_m,
-                "残余不平衡应小于初始"
-            );
-        }
-
-        #[test]
-        fn test_balance_correction_converges_in_steps() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let result = sim.compute_balance_correction(1000.0, &cfg, None, None);
-            assert!(result.steps_taken > 0, "至少需要1步迭代");
-            assert!(
-                result.steps_taken <= 50,
-                "迭代步数不应超过上限 (实际 {})",
-                result.steps_taken
-            );
-            assert!(result.success, "平衡校正应成功收敛");
-        }
-
-        #[test]
-        fn test_balance_correction_improves_critical_speed() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let result = sim.compute_balance_correction(1000.0, &cfg, None, None);
-            assert!(
-                result.critical_rpm_improvement_pct >= 0.0,
-                "临界转速提升百分比应非负"
-            );
-        }
-
-        #[test]
-        fn test_balance_correction_weight_positive() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let result = sim.compute_balance_correction(1000.0, &cfg, None, None);
-            assert!(result.correction_weight_grams >= 0.0);
-            assert!(result.correction_weight_grams <= cfg.max_correction_weight_grams * 2.0);
-        }
-
-        #[test]
-        fn test_balance_correction_angle_in_range() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let result = sim.compute_balance_correction(1000.0, &cfg, None, None);
-            assert!(
-                result.correction_angle_deg >= -360.0 && result.correction_angle_deg <= 720.0,
-                "角度 {} 超出合理范围",
-                result.correction_angle_deg
-            );
-        }
-
-        #[test]
-        fn test_balance_with_material_context() {
-            let base = base_rotor();
-            let mats = materials();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            for m in &mats {
-                let result = sim.compute_balance_correction(1000.0, &cfg, Some(m), None);
-                assert!(result.success);
-                assert!(result.vibration_reduction_pct > 0.0);
-            }
-        }
-
-        #[test]
-        fn test_balance_with_era_context() {
-            let base = base_rotor();
-            let mats = materials();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let eras = [ancient_era(), modern_era()];
-            for era in &eras {
-                let result = sim.compute_balance_correction(era.typical_rpm, &cfg, Some(&mats[0]), Some(era));
-                assert!(result.success);
-                assert!(result.vibration_after_mm < result.vibration_before_mm);
-            }
-        }
-
-        #[test]
-        fn test_balance_boundary_zero_rpm() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let result = sim.compute_balance_correction(0.0, &cfg, None, None);
-            assert!(result.residual_unbalance_m.is_finite());
-            assert!(result.success);
-        }
-
-        #[test]
-        fn test_balance_boundary_very_strict_target() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let mut cfg = balance_cfg();
-            cfg.target_residual_unbalance_m = 1e-12;
-            let result = sim.compute_balance_correction(1000.0, &cfg, None, None);
-            assert!(result.steps_taken > 0);
-        }
-
-        #[test]
-        fn test_balance_boundary_same_initial_equals_target() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let mut cfg = balance_cfg();
-            cfg.initial_residual_unbalance_m = 0.000001;
-            cfg.target_residual_unbalance_m = 0.000001;
-            let result = sim.compute_balance_correction(1000.0, &cfg, None, None);
-            assert!(result.residual_unbalance_m.is_finite());
-        }
-
-        #[test]
-        fn test_vibration_reduction_at_least_40_percent() {
-            let base = base_rotor();
-            let sim = VibrationSimulator::new(base, base_bearing());
-            let cfg = balance_cfg();
-            let result = sim.compute_balance_correction(1000.0, &cfg, None, None);
-            assert!(
-                result.vibration_reduction_pct >= 40.0,
-                "动平衡应至少降低40%振动 (实际 {:.1}%)",
-                result.vibration_reduction_pct
             );
         }
     }
