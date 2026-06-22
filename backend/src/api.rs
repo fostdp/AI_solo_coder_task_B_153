@@ -496,7 +496,7 @@ async fn era_comparison(
     let sim = &state.vibration_simulator;
     let cfg = &state.config;
 
-    let mut eras: Vec<(&str, &crate::config::EraProfile)> = vec![
+    let eras: Vec<(&str, &crate::config::EraProfile)> = vec![
         ("ancient_yuan", &cfg.era_profiles.ancient_yuan),
         ("modern_high_speed", &cfg.era_profiles.modern_high_speed),
     ];

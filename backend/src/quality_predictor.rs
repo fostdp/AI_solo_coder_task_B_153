@@ -358,6 +358,204 @@ impl QualityPredictor {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        EraProfile, MaterialProfile, StrengthCoeffs, RegressionModelConfig, UniformityCoeffs,
+    };
+    use crate::metrics::Metrics;
+    use std::sync::{Arc, OnceLock};
+
+    static METRICS: OnceLock<Arc<Metrics>> = OnceLock::new();
+    fn shared_metrics() -> Arc<Metrics> {
+        METRICS.get_or_init(|| Metrics::new().unwrap()).clone()
+    }
+
+    fn cfg() -> RegressionModelConfig {
+        RegressionModelConfig {
+            target_twist_per_meter: 800.0,
+            initial_uniformity_coeffs: UniformityCoeffs {
+                beta0: 95.0,
+                beta1: -0.8,
+                beta2: -0.3,
+                beta3: -0.05,
+            },
+            initial_strength_coeffs: StrengthCoeffs {
+                alpha0: 15.0,
+                alpha1: 0.02,
+                alpha2: -1.5,
+                alpha3: -0.00001,
+            },
+            lms_learning_rate: 0.01,
+            wear_energy_coefficient: 1e-9,
+            wear_time_coefficient: 2e-10,
+            wear_max_coefficient: 0.3,
+            calibration_window_size: 200,
+            vibration_impact_lambda: 2.0,
+        }
+    }
+
+    fn material_iron() -> MaterialProfile {
+        MaterialProfile {
+            material_id: "iron".into(),
+            display_name: "".into(),
+            density_kg_m3: 7850.0,
+            youngs_modulus_pa: 210e9,
+            yield_strength_pa: 0.0,
+            thermal_expansion_per_c: 0.0,
+            damping_ratio_factor: 1.0,
+            surface_friction_coeff: 0.0,
+            quality_factor: 1.0,
+            color_hex: "".into(),
+            era_compatibility: vec![],
+        }
+    }
+
+    fn material_wood() -> MaterialProfile {
+        MaterialProfile {
+            material_id: "wood".into(),
+            display_name: "".into(),
+            density_kg_m3: 750.0,
+            youngs_modulus_pa: 10e9,
+            yield_strength_pa: 0.0,
+            thermal_expansion_per_c: 0.0,
+            damping_ratio_factor: 3.5,
+            surface_friction_coeff: 0.0,
+            quality_factor: 0.85,
+            color_hex: "".into(),
+            era_compatibility: vec![],
+        }
+    }
+
+    fn era_ancient() -> EraProfile {
+        EraProfile {
+            era_id: "ancient".into(),
+            display_name: "".into(),
+            era_year: "".into(),
+            description: "".into(),
+            default_material: "wood".into(),
+            base_rpm_min: 200.0,
+            base_rpm_max: 800.0,
+            typical_rpm: 500.0,
+            unbalance_tolerance_m: 0.0,
+            surface_roughness_factor: 2.5,
+            manufacturing_precision_factor: 5.0,
+            bearing_technology: "".into(),
+            typical_yarn: "".into(),
+            rpm_scaling_factor: 0.25,
+            shaft_length_factor: 1.2,
+            shaft_diameter_factor: 1.5,
+        }
+    }
+
+    fn era_modern() -> EraProfile {
+        EraProfile {
+            era_id: "modern".into(),
+            display_name: "".into(),
+            era_year: "".into(),
+            description: "".into(),
+            default_material: "iron".into(),
+            base_rpm_min: 8000.0,
+            base_rpm_max: 25000.0,
+            typical_rpm: 18000.0,
+            unbalance_tolerance_m: 0.0,
+            surface_roughness_factor: 0.3,
+            manufacturing_precision_factor: 0.05,
+            bearing_technology: "".into(),
+            typical_yarn: "".into(),
+            rpm_scaling_factor: 10.0,
+            shaft_length_factor: 0.8,
+            shaft_diameter_factor: 0.7,
+        }
+    }
+
+    mod predict_with_context_tests {
+        use super::*;
+
+        #[test]
+        fn test_iron_material_boost_is_one() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            let result = qp.predict_with_context("s1", 0.1, 800.0, 1000.0, Some(&material_iron()), None, None);
+            assert!((result.material_boost - 1.0).abs() < 1e-6);
+        }
+
+        #[test]
+        fn test_wood_lowers_quality_vs_iron() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            let iron = qp.predict_with_context("s1", 0.1, 800.0, 1000.0, Some(&material_iron()), None, None);
+            let wood = qp.predict_with_context("s1", 0.1, 800.0, 1000.0, Some(&material_wood()), None, None);
+            assert!(wood.predicted_uniformity < iron.predicted_uniformity);
+            assert!(wood.predicted_strength < iron.predicted_strength);
+        }
+
+        #[test]
+        fn test_modern_era_boosts_quality() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            let ancient = qp.predict_with_context("s1", 0.1, 800.0, 1000.0, Some(&material_iron()), Some(&era_ancient()), None);
+            let modern = qp.predict_with_context("s1", 0.1, 800.0, 1000.0, Some(&material_iron()), Some(&era_modern()), None);
+            assert!(modern.era_boost > ancient.era_boost);
+            assert!(modern.predicted_uniformity > ancient.predicted_uniformity);
+        }
+
+        #[test]
+        fn test_balance_correction_reduces_vibration_impact() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            let without = qp.predict_with_context("s1", 0.5, 800.0, 1000.0, None, None, Some(0.0));
+            let with = qp.predict_with_context("s1", 0.5, 800.0, 1000.0, None, None, Some(0.8));
+            assert!(with.balance_recovery == 0.8);
+            assert!(with.predicted_uniformity >= without.predicted_uniformity);
+        }
+
+        #[test]
+        fn test_balance_recovery_boundary_zero() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            let r = qp.predict_with_context("s1", 0.1, 800.0, 1000.0, None, None, Some(0.0));
+            assert_eq!(r.balance_recovery, 0.0);
+        }
+
+        #[test]
+        fn test_balance_recovery_boundary_one() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            let r = qp.predict_with_context("s1", 0.5, 800.0, 1000.0, None, None, Some(1.0));
+            assert!(r.balance_recovery == 1.0);
+            assert!(r.predicted_uniformity > 0.0);
+        }
+
+        #[test]
+        fn test_higher_vibration_lowers_uniformity() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            let low = qp.predict_with_context("s1", 0.01, 800.0, 1000.0, None, None, None);
+            let high = qp.predict_with_context("s1", 0.5, 800.0, 1000.0, None, None, None);
+            assert!(low.predicted_uniformity > high.predicted_uniformity);
+        }
+
+        #[test]
+        fn test_quality_outputs_are_nonnegative() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            for vib in [0.0, 0.01, 0.1, 0.5, 1.0, 5.0] {
+                for twist in [100.0, 800.0, 2000.0] {
+                    let r = qp.predict_with_context("s", vib, twist, 1000.0, None, None, None);
+                    assert!(r.predicted_uniformity >= 0.0, "uniformity {} negative (vib={})", r.predicted_uniformity, vib);
+                    assert!(r.predicted_strength >= 0.0);
+                    assert!(r.vibration_impact_factor >= 0.0);
+                    assert!(r.wear_coefficient >= 0.0);
+                }
+            }
+        }
+
+        #[test]
+        fn test_material_era_combined_is_deterministic() {
+            let qp = QualityPredictor::new(cfg(), shared_metrics());
+            let iron = material_iron();
+            let modern = era_modern();
+            let r1 = qp.predict_with_context("s1", 0.1, 800.0, 1000.0, Some(&iron), Some(&modern), Some(0.5));
+            let r2 = qp.predict_with_context("s1", 0.1, 800.0, 1000.0, Some(&iron), Some(&modern), Some(0.5));
+            assert!((r1.predicted_uniformity - r2.predicted_uniformity).abs() < 1e-6);
+        }
+    }
+}
+
 pub async fn run_quality_service(
     predictor: std::sync::Arc<QualityPredictor>,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<(
