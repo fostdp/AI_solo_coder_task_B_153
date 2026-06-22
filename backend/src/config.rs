@@ -130,6 +130,16 @@ pub struct MaterialProfile {
     pub quality_factor: f64,
     pub color_hex: String,
     pub era_compatibility: Vec<String>,
+    #[serde(default = "default_data_source")]
+    pub data_source: String,
+    #[serde(default)]
+    pub experimental_uncertainty_pct: f64,
+    #[serde(default)]
+    pub notes: String,
+}
+
+fn default_data_source() -> String {
+    "工程估算".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +167,19 @@ pub struct EraProfile {
     pub rpm_scaling_factor: f64,
     pub shaft_length_factor: f64,
     pub shaft_diameter_factor: f64,
+    #[serde(default = "default_standard_reference")]
+    pub standard_reference: String,
+    #[serde(default = "default_balance_grade")]
+    pub balance_quality_grade: String,
+    #[serde(default)]
+    pub standard_source: String,
+}
+
+fn default_standard_reference() -> String {
+    "企业经验值".into()
+}
+fn default_balance_grade() -> String {
+    "G6.3".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +306,9 @@ mod tests {
             quality_factor: 1.0,
             color_hex: "#8899aa".into(),
             era_compatibility: vec!["modern_high_speed".into()],
+            data_source: "测试基准".into(),
+            experimental_uncertainty_pct: 0.0,
+            notes: "".into(),
         }
     }
 
@@ -299,6 +325,9 @@ mod tests {
             quality_factor: 0.85,
             color_hex: "#6b4423".into(),
             era_compatibility: vec!["ancient_yuan".into()],
+            data_source: "测试基准".into(),
+            experimental_uncertainty_pct: 0.0,
+            notes: "".into(),
         }
     }
 
@@ -315,6 +344,9 @@ mod tests {
             quality_factor: 0.92,
             color_hex: "#b87333".into(),
             era_compatibility: vec!["ancient_yuan".into(), "modern_high_speed".into()],
+            data_source: "测试基准".into(),
+            experimental_uncertainty_pct: 0.0,
+            notes: "".into(),
         }
     }
 
@@ -336,6 +368,9 @@ mod tests {
             rpm_scaling_factor: 0.25,
             shaft_length_factor: 1.2,
             shaft_diameter_factor: 1.5,
+            standard_reference: "测试基准".into(),
+            balance_quality_grade: "G40".into(),
+            standard_source: "".into(),
         }
     }
 
@@ -357,6 +392,9 @@ mod tests {
             rpm_scaling_factor: 10.0,
             shaft_length_factor: 0.8,
             shaft_diameter_factor: 0.7,
+            standard_reference: "测试基准".into(),
+            balance_quality_grade: "G2.5".into(),
+            standard_source: "".into(),
         }
     }
 

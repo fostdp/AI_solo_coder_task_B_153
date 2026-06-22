@@ -408,14 +408,6 @@ impl VibrationSimulator {
         material: Option<&MaterialProfile>,
         era: Option<&EraProfile>,
     ) -> BalanceCorrectionResult {
-        let mut current_unbalance = correction_cfg.initial_residual_unbalance_m;
-        let vibration_before;
-        let vibration_after;
-        let mut total_weight = 0.0;
-        let mut final_angle = 0.0;
-        let mut steps = 0u32;
-        const MAX_STEPS: u32 = 50;
-
         let test_rotor: RotorDynamicsConfig = if let (Some(m), Some(e)) = (material, era) {
             e.apply_to_rotor(m, &self.rotor)
         } else if let Some(m) = material {
@@ -424,51 +416,40 @@ impl VibrationSimulator {
             self.rotor.clone()
         };
 
-        {
-            let test_sim = VibrationSimulator::new(test_rotor.clone(), self.bearing.clone());
-            let vib0 = test_sim.analyze_with_unbalance(initial_rpm, current_unbalance);
-            vibration_before = vib0.total_displacement * 1000.0;
-        }
+        let correction_radius = test_rotor.shaft_diameter_m * 0.4 + 0.001;
 
-        let target = correction_cfg.target_residual_unbalance_m;
-        let step_fraction = correction_cfg.correction_step_fraction;
+        let sim_initial = VibrationSimulator::new(test_rotor.clone(), self.bearing.clone());
+        let vib_initial = sim_initial.analyze_with_unbalance(initial_rpm, correction_cfg.initial_residual_unbalance_m);
+        let vibration_before = vib_initial.total_displacement * 1000.0;
 
-        while current_unbalance > target && steps < MAX_STEPS {
-            steps += 1;
-            let delta_unbalance = (current_unbalance - target) * step_fraction;
-            let correction_radius =
-                self.rotor.shaft_diameter_m * 0.4 + 0.001;
-            let correction_mass_kg = delta_unbalance / correction_radius.max(1e-6);
-            let correction_g = correction_mass_kg * 1000.0;
-            let clipped_g = correction_g
-                .min(correction_cfg.max_correction_weight_grams)
-                .max(0.0);
+        let initial_unbalance = correction_cfg.initial_residual_unbalance_m;
+        let target_unbalance = correction_cfg.target_residual_unbalance_m;
 
-            total_weight += clipped_g;
-            current_unbalance -= clipped_g / 1000.0 * correction_radius;
-            final_angle = final_angle + (steps as f64) * 11.25;
-            if final_angle > correction_cfg.max_correction_angle_deg {
-                final_angle -= 360.0;
-            }
-            current_unbalance = current_unbalance.max(target * 0.5);
-        }
-
-        {
-            let test_sim = VibrationSimulator::new(test_rotor.clone(), self.bearing.clone());
-            let vib1 = test_sim.analyze_with_unbalance(initial_rpm, current_unbalance);
-            vibration_after = vib1.total_displacement * 1000.0;
-        }
-
-        let critical_rpm_before = {
-            let sim = VibrationSimulator::new(self.rotor.clone(), self.bearing.clone());
-            let v0 = sim.analyze_with_unbalance(initial_rpm, correction_cfg.initial_residual_unbalance_m);
-            v0.critical_rpm
+        let delta_unbalance = (initial_unbalance - target_unbalance).max(0.0);
+        let correction_mass_kg = if correction_radius > 1e-9 {
+            delta_unbalance / correction_radius
+        } else {
+            0.0
         };
-        let critical_rpm_after = {
-            let sim = VibrationSimulator::new(test_rotor, self.bearing.clone());
-            let v1 = sim.analyze_with_unbalance(initial_rpm, current_unbalance);
-            v1.critical_rpm
-        };
+        let mut correction_grams = correction_mass_kg * 1000.0;
+
+        correction_grams = correction_grams
+            .min(correction_cfg.max_correction_weight_grams)
+            .max(0.0);
+
+        let actual_delta_unbalance = correction_grams / 1000.0 * correction_radius;
+        let residual_unbalance = (initial_unbalance - actual_delta_unbalance).max(target_unbalance * 0.5);
+
+        let phase_deg = vib_initial.phase_angle * 180.0 / std::f64::consts::PI;
+        let correction_angle = (phase_deg + 180.0) % 360.0;
+        let final_angle = if correction_angle < 0.0 { correction_angle + 360.0 } else { correction_angle };
+
+        let sim_after = VibrationSimulator::new(test_rotor.clone(), self.bearing.clone());
+        let vib_after = sim_after.analyze_with_unbalance(initial_rpm, residual_unbalance);
+        let vibration_after = vib_after.total_displacement * 1000.0;
+
+        let critical_rpm_before = vib_initial.critical_rpm;
+        let critical_rpm_after = vib_after.critical_rpm;
 
         let reduction_pct = if vibration_before > 1e-12 {
             ((vibration_before - vibration_after) / vibration_before * 100.0).max(0.0)
@@ -481,21 +462,15 @@ impl VibrationSimulator {
             0.0
         };
 
-        let normalized_angle = {
-            let mut a = final_angle % 360.0;
-            if a < 0.0 { a += 360.0; }
-            a
-        };
-
         BalanceCorrectionResult {
-            residual_unbalance_m: current_unbalance,
-            correction_weight_grams: total_weight,
-            correction_angle_deg: normalized_angle,
+            residual_unbalance_m: residual_unbalance,
+            correction_weight_grams: correction_grams,
+            correction_angle_deg: final_angle,
             vibration_before_mm: vibration_before,
             vibration_after_mm: vibration_after,
             vibration_reduction_pct: reduction_pct,
-            steps_taken: steps,
-            success: current_unbalance <= target * 1.1 || steps < MAX_STEPS,
+            steps_taken: 1,
+            success: residual_unbalance <= target_unbalance * 1.1 || correction_grams < correction_cfg.max_correction_weight_grams,
             critical_rpm_improvement_pct: critical_improvement_pct,
         }
     }
@@ -558,6 +533,9 @@ mod tests {
                 quality_factor: 1.0,
                 color_hex: "".into(),
                 era_compatibility: vec![],
+                data_source: "测试基准".into(),
+                experimental_uncertainty_pct: 0.0,
+                notes: "".into(),
             },
             MaterialProfile {
                 material_id: "copper".into(),
@@ -571,6 +549,9 @@ mod tests {
                 quality_factor: 0.92,
                 color_hex: "".into(),
                 era_compatibility: vec![],
+                data_source: "测试基准".into(),
+                experimental_uncertainty_pct: 0.0,
+                notes: "".into(),
             },
             MaterialProfile {
                 material_id: "wood".into(),
@@ -584,6 +565,9 @@ mod tests {
                 quality_factor: 0.85,
                 color_hex: "".into(),
                 era_compatibility: vec![],
+                data_source: "测试基准".into(),
+                experimental_uncertainty_pct: 0.0,
+                notes: "".into(),
             },
         ]
     }
@@ -606,6 +590,9 @@ mod tests {
             rpm_scaling_factor: 0.25,
             shaft_length_factor: 1.2,
             shaft_diameter_factor: 1.5,
+            standard_reference: "测试基准".into(),
+            balance_quality_grade: "G40".into(),
+            standard_source: "".into(),
         }
     }
 
@@ -627,6 +614,9 @@ mod tests {
             rpm_scaling_factor: 10.0,
             shaft_length_factor: 0.8,
             shaft_diameter_factor: 0.7,
+            standard_reference: "测试基准".into(),
+            balance_quality_grade: "G2.5".into(),
+            standard_source: "".into(),
         }
     }
 

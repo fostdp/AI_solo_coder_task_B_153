@@ -438,6 +438,84 @@ let currentMaterial = 'iron';
 let currentEra = 'modern_high_speed';
 let balanceCorrectionFraction = 0.0;
 let demoOverrideRpm = null;
+let currentCriticalRpm = 7600;
+let sliderLastRpm = 500;
+let forceFeedbackStrength = 0;
+
+function computeCriticalRpm(material, era) {
+    const baseLength = 0.3;
+    const baseDiameter = 0.008;
+    const baseE = 210e9;
+    const baseRho = 7850;
+    
+    const materials = {
+        iron: { E: 208e9, rho: 7850 },
+        copper: { E: 113e9, rho: 8800 },
+        wood: { E: 12e9, rho: 780 }
+    };
+    const eras = {
+        ancient_yuan: { len: 1.2, dia: 1.5 },
+        modern_high_speed: { len: 0.8, dia: 0.7 },
+        '': { len: 1.0, dia: 1.0 }
+    };
+    
+    const mat = materials[material] || materials.iron;
+    const e = eras[era] || eras[''];
+    
+    const L = baseLength * e.len;
+    const d = baseDiameter * e.dia;
+    const I = Math.PI * Math.pow(d, 4) / 64;
+    const k_shaft = 48 * mat.E * I / Math.pow(L, 3);
+    const volume = Math.PI * Math.pow(d / 2, 2) * L;
+    const mass = mat.rho * volume;
+    
+    const omega_cr = Math.sqrt(k_shaft / mass);
+    const rpm_cr = omega_cr * 60 / (2 * Math.PI);
+    return rpm_cr;
+}
+
+function updateForceFeedback(rpm, criticalRpm) {
+    const rpmSlider = document.getElementById('rpm-slider');
+    const ffBar = document.getElementById('ff-bar');
+    const ffValue = document.getElementById('ff-value');
+    const ffHint = document.getElementById('ff-hint');
+    const ffMarker = document.getElementById('ff-critical-marker');
+    
+    if (!rpmSlider || !ffBar || !ffValue) return;
+    
+    const minRpm = parseFloat(rpmSlider.min);
+    const maxRpm = parseFloat(rpmSlider.max);
+    
+    if (ffMarker && criticalRpm) {
+        const markerPct = ((criticalRpm - minRpm) / (maxRpm - minRpm)) * 100;
+        ffMarker.style.left = Math.max(0, Math.min(100, markerPct)) + '%';
+        currentCriticalRpm = criticalRpm;
+    }
+    
+    const ratio = rpm / currentCriticalRpm;
+    let strength = 0;
+    
+    if (ratio > 0.6 && ratio < 1.4) {
+        const dist = Math.abs(ratio - 1.0);
+        strength = (1.0 - dist / 0.4) * 100;
+        strength = Math.max(0, Math.min(100, strength));
+    }
+    
+    forceFeedbackStrength = strength;
+    ffBar.style.width = strength.toFixed(1) + '%';
+    ffValue.textContent = strength.toFixed(0) + '%';
+    
+    if (strength > 70) {
+        rpmSlider.classList.add('near-critical');
+        if (ffHint) ffHint.textContent = '⚠ 接近临界转速！感受到明显振动阻力';
+    } else if (strength > 30) {
+        rpmSlider.classList.remove('near-critical');
+        if (ffHint) ffHint.textContent = '振动逐渐增强，注意操作力度';
+    } else {
+        rpmSlider.classList.remove('near-critical');
+        if (ffHint) ffHint.textContent = '轻调转速，感受临界转速区的"阻力"';
+    }
+}
 
 function generateDemoData() {
     const rpm = demoOverrideRpm !== null ? demoOverrideRpm : 500 + Math.sin(Date.now() / 1000) * 150 + Math.random() * 50;
@@ -495,6 +573,7 @@ function updateSimulationDisplay(sim) {
     }
 
     renderContextInfo(sim);
+    updateForceFeedback(sim.vibration.rpm || demoOverrideRpm || 500, sim.vibration.critical_rpm);
 }
 
 function renderContextInfo(sim) {
@@ -525,6 +604,7 @@ function initControlPanel() {
             rpmDisplay.textContent = val;
             demoOverrideRpm = val;
             if (typeof setCurrentRpm === 'function') setCurrentRpm(val);
+            updateForceFeedback(val, null);
         });
     }
 
@@ -547,6 +627,8 @@ function initControlPanel() {
                 setSpindleMaterial(currentMaterial);
             }
             renderMaterialInfo(currentMaterial);
+            const cr = computeCriticalRpm(currentMaterial, currentEra);
+            updateForceFeedback(demoOverrideRpm || 500, cr);
         });
     });
 
@@ -559,8 +641,13 @@ function initControlPanel() {
                 setSpindleEra(currentEra);
             }
             renderEraInfo(currentEra);
+            const cr = computeCriticalRpm(currentMaterial, currentEra);
+            updateForceFeedback(demoOverrideRpm || 500, cr);
         });
     });
+
+    const initialCr = computeCriticalRpm(currentMaterial, currentEra);
+    updateForceFeedback(500, initialCr);
 
     const balInitial = document.getElementById('balance-initial');
     const balInitialVal = document.getElementById('balance-initial-val');

@@ -409,6 +409,9 @@ mod tests {
             quality_factor: 1.0,
             color_hex: "".into(),
             era_compatibility: vec![],
+            data_source: "测试基准".into(),
+            experimental_uncertainty_pct: 0.0,
+            notes: "".into(),
         }
     }
 
@@ -425,6 +428,9 @@ mod tests {
             quality_factor: 0.85,
             color_hex: "".into(),
             era_compatibility: vec![],
+            data_source: "测试基准".into(),
+            experimental_uncertainty_pct: 0.0,
+            notes: "".into(),
         }
     }
 
@@ -446,6 +452,9 @@ mod tests {
             rpm_scaling_factor: 0.25,
             shaft_length_factor: 1.2,
             shaft_diameter_factor: 1.5,
+            standard_reference: "测试基准".into(),
+            balance_quality_grade: "G40".into(),
+            standard_source: "".into(),
         }
     }
 
@@ -467,6 +476,9 @@ mod tests {
             rpm_scaling_factor: 10.0,
             shaft_length_factor: 0.8,
             shaft_diameter_factor: 0.7,
+            standard_reference: "测试基准".into(),
+            balance_quality_grade: "G2.5".into(),
+            standard_source: "".into(),
         }
     }
 
